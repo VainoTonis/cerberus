@@ -5,11 +5,14 @@ type OpenCode struct{}
 
 func (OpenCode) Name() string { return "opencode" }
 
-func (OpenCode) Args(prompt, model string) ([]string, error) {
+func (OpenCode) Args(r RunArgs) ([]string, error) {
 	args := []string{"opencode", "run", "--format", "json"}
-	if model != "" {
-		args = append(args, "-m", model)
+	if r.Model != "" {
+		args = append(args, "-m", r.Model)
 	}
-	args = append(args, prompt)
+	if r.OcAgent != "" {
+		args = append(args, "--agent", r.OcAgent)
+	}
+	args = append(args, r.Prompt)
 	return args, nil
 }

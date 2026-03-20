@@ -75,18 +75,20 @@ func RemoveWorktree(repoRoot string, index int) error {
 	return nil
 }
 
-// Diff returns the unified diff of changes in a worktree relative to the base commit.
+// Diff returns the unified diff of all changes in a worktree relative to the
+// base commit, including both committed and uncommitted (working tree) changes.
 func Diff(worktreePath, baseCommit string) (string, error) {
-	out, err := run(worktreePath, "git", "diff", baseCommit, "HEAD")
+	out, err := run(worktreePath, "git", "diff", baseCommit)
 	if err != nil {
 		return "", fmt.Errorf("diff worktree %s: %w", worktreePath, err)
 	}
 	return out, nil
 }
 
-// ChangedFiles returns the list of files changed in a worktree relative to the base commit.
+// ChangedFiles returns the list of files changed in a worktree relative to the
+// base commit, including both committed and uncommitted (working tree) changes.
 func ChangedFiles(worktreePath, baseCommit string) ([]string, error) {
-	out, err := run(worktreePath, "git", "diff", "--name-only", baseCommit, "HEAD")
+	out, err := run(worktreePath, "git", "diff", "--name-only", baseCommit)
 	if err != nil {
 		return nil, fmt.Errorf("changed files in %s: %w", worktreePath, err)
 	}

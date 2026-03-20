@@ -27,6 +27,7 @@ Commands:
   status   Show the status of each solution
   review   Print a summary of what each solution changed
   apply    Apply a solution's changes to the main worktree
+  merge    Ask an LLM to analyse all solutions and suggest the best merge
   clean    Remove all worktrees, branches, and state
 
 Run 'cerberus <command> -help' for command-specific flags.
@@ -51,6 +52,8 @@ func main() {
 		err = cmdReview(args)
 	case "apply":
 		err = cmdApply(args)
+	case "merge":
+		err = cmdMerge(args)
 	case "clean":
 		err = cmdClean(args)
 	case "-help", "--help", "help":
@@ -92,7 +95,7 @@ Flags:
 		return err
 	}
 
-	resolvedPrompt := *prompt
+	resolvedPrompt := strings.TrimSpace(*prompt)
 	if *promptFile != "" {
 		data, err := os.ReadFile(*promptFile)
 		if err != nil {
@@ -102,6 +105,11 @@ Flags:
 	}
 	if resolvedPrompt == "" {
 		return fmt.Errorf("-prompt or -prompt-file is required")
+	}
+
+	// Prepend global instructions from config if set.
+	if userCfg.Instructions != "" {
+		resolvedPrompt = userCfg.Instructions + "\n\n" + resolvedPrompt
 	}
 
 	// Build the runner list.
@@ -182,10 +190,11 @@ Flags:
 			Worktree: wtPath,
 			Agent:    r.Agent,
 			Model:    r.Model,
+			OcAgent:  r.OcAgent,
 			Status:   config.StatusPending,
 			LogFile:  logPath,
 		})
-		fmt.Printf("  worktree solve-%d: %s  agent=%s  model=%s\n", idx, branch, r.Agent, or(r.Model, "(default)"))
+		fmt.Printf("  worktree solve-%d: %s  agent=%s  model=%s  oc_agent=%s\n", idx, branch, r.Agent, or(r.Model, "(default)"), or(r.OcAgent, "(default)"))
 	}
 	fmt.Println()
 
@@ -210,7 +219,11 @@ Flags:
 			defer wg.Done()
 
 			a, _ := agent.Get(sol.Agent) // already validated above
-			cmdArgs, err := a.Args(resolvedPrompt, sol.Model)
+			cmdArgs, err := a.Args(agent.RunArgs{
+				Prompt:  resolvedPrompt,
+				Model:   sol.Model,
+				OcAgent: sol.OcAgent,
+			})
 			if err != nil {
 				mu.Lock()
 				sol.Status = config.StatusFailed
@@ -493,6 +506,130 @@ Flags:
 
 	fmt.Printf("\napplied solve-%d to %s\n", sol.Index, repoRoot)
 	fmt.Println("review the changes, then commit as usual.")
+	return nil
+}
+
+// cmdMerge collects all solution diffs, sends them to opencode run, and streams
+// the LLM's analysis and merge suggestion to stdout.
+func cmdMerge(args []string) error {
+	fs := flag.NewFlagSet("merge", flag.ExitOnError)
+	fs.Usage = func() {
+		fmt.Fprint(os.Stderr, `Usage: cerberus merge [flags]
+
+Send all solution diffs to an LLM and stream its merge suggestion.
+
+Flags:
+`)
+		fs.PrintDefaults()
+	}
+	model := fs.String("model", "", "model to use for the merge (default: opencode's configured default)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	cwd, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("get working directory: %w", err)
+	}
+	repoRoot, err := git.RepoRoot(cwd)
+	if err != nil {
+		return err
+	}
+
+	state, err := config.Load(repoRoot)
+	if err != nil {
+		return err
+	}
+
+	// Collect diffs from all solutions that have changes.
+	type solutionDiff struct {
+		sol  config.Solution
+		diff string
+	}
+	var diffs []solutionDiff
+	for _, sol := range state.Solutions {
+		diff, err := git.Diff(sol.Worktree, state.BaseCommit)
+		if err != nil {
+			return fmt.Errorf("get diff for solve-%d: %w", sol.Index, err)
+		}
+		if strings.TrimSpace(diff) == "" {
+			fmt.Fprintf(os.Stderr, "solve-%d has no changes, skipping\n", sol.Index)
+			continue
+		}
+		diffs = append(diffs, solutionDiff{sol: sol, diff: diff})
+	}
+
+	if len(diffs) == 0 {
+		return fmt.Errorf("no solutions have changes to merge")
+	}
+
+	// Build the merge prompt.
+	var b strings.Builder
+	fmt.Fprintf(&b, "I ran the following task against a codebase using %d different AI models in parallel, each in its own git worktree.\n\n", len(diffs))
+	fmt.Fprintf(&b, "Original task:\n%s\n\n", state.Prompt)
+	fmt.Fprintf(&b, "Below are the unified diffs produced by each solution. Please analyse them, identify the strengths and weaknesses of each approach, and produce a single best merged solution as a unified diff.\n\n")
+	fmt.Fprintf(&b, "After the diff, briefly explain what you took from each solution and why.\n\n")
+	fmt.Fprintf(&b, "---\n\n")
+
+	for _, d := range diffs {
+		fmt.Fprintf(&b, "## Solution %d (agent=%s model=%s)\n\n", d.sol.Index, d.sol.Agent, or(d.sol.Model, "default"))
+		fmt.Fprintf(&b, "```diff\n%s\n```\n\n", d.diff)
+	}
+
+	mergePrompt := b.String()
+
+	// Shell out to opencode run, streaming JSON events and printing text to stdout.
+	ocArgs := []string{"opencode", "run", "--format", "json"}
+	if *model != "" {
+		ocArgs = append(ocArgs, "-m", *model)
+	}
+	ocArgs = append(ocArgs, mergePrompt)
+
+	cmd := exec.Command(ocArgs[0], ocArgs[1:]...)
+	cmd.Dir = repoRoot
+
+	pr, pw := io.Pipe()
+	cmd.Stdout = pw
+	cmd.Stderr = pw
+
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("start opencode: %w", err)
+	}
+
+	// Parse JSON events and print only the text content.
+	var scanWg sync.WaitGroup
+	scanWg.Add(1)
+	go func() {
+		defer scanWg.Done()
+		scanner := bufio.NewScanner(pr)
+		scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
+		for scanner.Scan() {
+			var event struct {
+				Type string `json:"type"`
+				Part struct {
+					Text string `json:"text"`
+				} `json:"part"`
+			}
+			if err := json.Unmarshal(scanner.Bytes(), &event); err != nil {
+				continue
+			}
+			if event.Type == "text" && event.Part.Text != "" {
+				fmt.Print(event.Part.Text)
+			}
+		}
+		fmt.Println()
+	}()
+
+	err = cmd.Wait()
+	pw.Close()
+	scanWg.Wait()
+
+	if err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			return fmt.Errorf("opencode exited with code %d", exitErr.ExitCode())
+		}
+		return fmt.Errorf("opencode: %w", err)
+	}
 	return nil
 }
 

@@ -15,16 +15,21 @@ const (
 )
 
 // Runner defines a single agent+model pair used for one solution slot.
+// OcAgent is the opencode agent mode to use (e.g. "build", "plan") - passed
+// as --agent to opencode run. If empty, opencode uses its default.
 type Runner struct {
-	Agent string `json:"agent"`
-	Model string `json:"model"`
+	Agent   string `json:"agent"`
+	Model   string `json:"model"`
+	OcAgent string `json:"oc_agent,omitempty"`
 }
 
 // UserConfig holds user-level defaults loaded from ~/.config/cerberus/config.json.
 // Runners defines the ordered list of agent+model pairs to use, one per solution slot.
 // If empty, cerberus falls back to the -agent and -model flags.
+// Instructions is prepended to every prompt sent to agents.
 type UserConfig struct {
-	Runners []Runner `json:"runners"`
+	Runners      []Runner `json:"runners"`
+	Instructions string   `json:"instructions"`
 }
 
 // LoadUserConfig reads ~/.config/cerberus/config.json.
@@ -64,6 +69,7 @@ type Solution struct {
 	Worktree  string         `json:"worktree"`
 	Agent     string         `json:"agent"`
 	Model     string         `json:"model"`
+	OcAgent   string         `json:"oc_agent,omitempty"`
 	Status    SolutionStatus `json:"status"`
 	PID       int            `json:"pid,omitempty"`
 	LogFile   string         `json:"log_file,omitempty"`

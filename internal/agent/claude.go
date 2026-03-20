@@ -6,11 +6,11 @@ type ClaudeCode struct{}
 
 func (ClaudeCode) Name() string { return "claude" }
 
-func (ClaudeCode) Args(prompt, model string) ([]string, error) {
+func (ClaudeCode) Args(r RunArgs) ([]string, error) {
 	args := []string{"claude", "-p"}
-	if model != "" {
-		args = append(args, "--model", model)
+	if r.Model != "" {
+		args = append(args, "--model", r.Model)
 	}
-	args = append(args, prompt)
+	args = append(args, r.Prompt)
 	return args, nil
 }
