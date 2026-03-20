@@ -1,0 +1,9 @@
+# build output
+/cerberus
+
+# cerberus session state
+.cerberus/
+
+# go
+*.test
+*.out
