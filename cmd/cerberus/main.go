@@ -88,7 +88,7 @@ Flags:
 	n := fs.Int("n", 0, "number of solutions (default: number of runners in config)")
 	prompt := fs.String("prompt", "", "prompt to send to each agent (required)")
 	promptFile := fs.String("prompt-file", "", "read prompt from file instead of -prompt")
-	agentFlag := fs.String("agent", "opencode", "agent to use when not set in config (opencode, claude)")
+	agentFlag := fs.String("agent", "opencode", "agent to use when not set in config")
 	modelFlag := fs.String("model", "", "model to use when not set in config")
 
 	if err := fs.Parse(args); err != nil {

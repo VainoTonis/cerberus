@@ -63,7 +63,7 @@ Requires Go 1.24+, git, and at least one supported agent CLI on your PATH.
 | Field | Description |
 |---|---|
 | `runners` | Ordered list of agent+model pairs. One solution slot per entry. |
-| `runners[].agent` | Agent CLI to use: `opencode` or `claude`. |
+| `runners[].agent` | Agent CLI to use: `opencode`. |
 | `runners[].model` | Model in `provider/model` format. Uses the agent's default if omitted. |
 | `runners[].oc_agent` | opencode agent mode (e.g. `build`, `plan`). Uses opencode's default if omitted. |
 | `instructions` | Prepended to every prompt. Use this to constrain agent behaviour. |
@@ -138,7 +138,6 @@ Logs for each solution are written to `.cerberus/logs/solve-N.log`.
 | Agent | CLI | Non-interactive flag |
 |---|---|---|
 | `opencode` | `opencode run --format json` | Native |
-| `claude` | `claude -p` | Native |
 
 Adding a new agent means implementing the `Agent` interface in `internal/agent/`:
 

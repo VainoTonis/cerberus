@@ -16,7 +16,7 @@ type RunArgs struct {
 
 // Agent represents a coding agent that can be launched with a prompt and model.
 type Agent interface {
-	// Name returns the agent identifier (e.g. "opencode", "claude").
+	// Name returns the agent identifier (e.g. "opencode").
 	Name() string
 	// Args returns the argv slice to exec for this agent.
 	Args(r RunArgs) ([]string, error)
@@ -25,7 +25,6 @@ type Agent interface {
 // registry maps agent names to their Agent implementations.
 var registry = map[string]Agent{
 	"opencode": OpenCode{},
-	"claude":   ClaudeCode{},
 }
 
 // Get returns the Agent for the given name, or an error if unknown.
