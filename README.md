@@ -1,3 +1,5 @@
+# THIS IS VIBE CODED USE AT YOUR OWN RISK (I KNOW I AM!)
+
 # cerberus
 
 Run the same coding task against a codebase in parallel using multiple AI models, then review and apply the best result.
