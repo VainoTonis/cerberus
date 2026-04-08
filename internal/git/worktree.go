@@ -183,11 +183,14 @@ func showDiff(worktreePath string, args ...string) error {
 		}
 		return err
 	}
-	pager := os.Getenv("PAGER")
-	if pager == "" {
-		pager = "less"
+	var pagerCmd *exec.Cmd
+	if _, err := exec.LookPath("delta"); err == nil {
+		pagerCmd = exec.Command("delta")
+	} else if pager := os.Getenv("PAGER"); pager != "" {
+		pagerCmd = exec.Command(pager)
+	} else {
+		pagerCmd = exec.Command("less", "-R")
 	}
-	pagerCmd := exec.Command(pager, "-R")
 	pagerCmd.Stdin = strings.NewReader(string(diffOut))
 	pagerCmd.Stdout = os.Stdout
 	pagerCmd.Stderr = os.Stderr

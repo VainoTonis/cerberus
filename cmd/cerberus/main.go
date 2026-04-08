@@ -931,6 +931,17 @@ Flags:
 			fmt.Fprintf(os.Stderr, "\ncherry-pick failed (likely a conflict).\n")
 			fmt.Fprintf(os.Stderr, "Resolve conflicts then run: git cherry-pick --continue\n")
 			fmt.Fprintf(os.Stderr, "To abort:                   git cherry-pick --abort\n")
+			if _, err := exec.LookPath("lazygit"); err == nil {
+				fmt.Fprintf(os.Stderr, "launching lazygit to resolve conflicts...\n")
+				cmd := exec.Command("lazygit")
+				cmd.Dir = repoRoot
+				cmd.Stdin = os.Stdin
+				cmd.Stdout = os.Stdout
+				cmd.Stderr = os.Stderr
+				if runErr := cmd.Run(); runErr == nil {
+					return nil
+				}
+			}
 			return err
 		}
 	} else {
@@ -939,6 +950,17 @@ Flags:
 			fmt.Fprintf(os.Stderr, "\ncherry-pick failed (likely a conflict).\n")
 			fmt.Fprintf(os.Stderr, "Resolve conflicts then run: git cherry-pick --continue\n")
 			fmt.Fprintf(os.Stderr, "To abort:                   git cherry-pick --abort\n")
+			if _, err := exec.LookPath("lazygit"); err == nil {
+				fmt.Fprintf(os.Stderr, "launching lazygit to resolve conflicts...\n")
+				cmd := exec.Command("lazygit")
+				cmd.Dir = repoRoot
+				cmd.Stdin = os.Stdin
+				cmd.Stdout = os.Stdout
+				cmd.Stderr = os.Stderr
+				if runErr := cmd.Run(); runErr == nil {
+					return nil
+				}
+			}
 			return err
 		}
 	}
