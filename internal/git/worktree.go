@@ -157,6 +157,54 @@ func CommittedDiff(worktreePath, baseCommit string) (string, error) {
 	return out, nil
 }
 
+func showDiff(worktreePath string, args ...string) error {
+	diffTool, _ := run(worktreePath, "git", "config", "diff.tool")
+	diffTool = strings.TrimSpace(diffTool)
+	if diffTool == "" {
+		diffTool = os.Getenv("GIT_EXTERNAL_DIFF")
+	}
+	if diffTool != "" {
+		cmdArgs := append([]string{"-C", worktreePath, "difftool", "--no-prompt"}, args...)
+		cmd := exec.Command("git", cmdArgs...)
+		cmd.Stdin = os.Stdin
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		if err := cmd.Run(); err != nil {
+			return fmt.Errorf("git difftool: %w", err)
+		}
+		return nil
+	}
+	cmdArgs := append([]string{"-C", worktreePath, "diff", "--color=always"}, args...)
+	cmd := exec.Command("git", cmdArgs...)
+	diffOut, err := cmd.Output()
+	if err != nil {
+		if ee, ok := err.(*exec.ExitError); ok {
+			return fmt.Errorf("git diff: %s", strings.TrimSpace(string(ee.Stderr)))
+		}
+		return err
+	}
+	pager := os.Getenv("PAGER")
+	if pager == "" {
+		pager = "less"
+	}
+	pagerCmd := exec.Command(pager, "-R")
+	pagerCmd.Stdin = strings.NewReader(string(diffOut))
+	pagerCmd.Stdout = os.Stdout
+	pagerCmd.Stderr = os.Stderr
+	if err := pagerCmd.Run(); err != nil {
+		fmt.Print(string(diffOut))
+	}
+	return nil
+}
+
+func ShowDiff(worktreePath, baseCommit string) error {
+	return showDiff(worktreePath, baseCommit)
+}
+
+func ShowCommittedDiff(worktreePath, baseCommit string) error {
+	return showDiff(worktreePath, baseCommit+"..HEAD")
+}
+
 // ChangedFiles returns the list of files changed in a worktree relative to the
 // base commit, including both committed and uncommitted (working tree) changes.
 func ChangedFiles(worktreePath, baseCommit string) ([]string, error) {

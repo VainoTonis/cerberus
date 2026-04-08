@@ -853,17 +853,14 @@ func cmdReview(args []string) error {
 
 		if *diffFlag {
 			fmt.Println()
-			var diff string
 			var diffErr error
 			if sol.CommitHash != "" {
-				diff, diffErr = git.CommittedDiff(sol.Worktree, state.BaseCommit)
+				diffErr = git.ShowCommittedDiff(sol.Worktree, state.BaseCommit)
 			} else {
-				diff, diffErr = git.Diff(sol.Worktree, state.BaseCommit)
+				diffErr = git.ShowDiff(sol.Worktree, state.BaseCommit)
 			}
 			if diffErr != nil {
 				fmt.Printf("  (error reading diff: %s)\n", diffErr)
-			} else {
-				fmt.Println(diff)
 			}
 		}
 		fmt.Println()
