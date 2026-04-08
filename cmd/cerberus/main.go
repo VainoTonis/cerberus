@@ -3,7 +3,6 @@ package main
 import (
 	"bufio"
 	"encoding/json"
-	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -13,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/spf13/cobra"
 	"github.com/tonis/cerberus/internal/agent"
 	"github.com/tonis/cerberus/internal/config"
 	"github.com/tonis/cerberus/internal/git"
@@ -21,74 +21,262 @@ import (
 // version is set at build time via -ldflags "-X main.version=..."
 var version = "dev"
 
-const usage = `cerberus - multi-agent parallel problem solver
-
-Usage:
-  cerberus <command> [flags]
-
-Commands:
-  start        Create a session worktree and run agents
-  rerun        Run the agent again in an existing solution worktree
-  list         List all active sessions in the current repo
-  status       Show the status of a session's solutions
-  review       Print a summary of what each solution changed
-  apply        Cherry-pick a solution's commits onto the current branch
-  merge        Ask an LLM to analyse all solutions and produce a merge suggestion
-  merge-apply  Apply the merge suggestion, commit, and clean up the session
-  logs         Tail all solution logs, printing only the message field
-  clean        Remove a session's worktrees, branches, and state
-  stats        Show model performance statistics across all sessions
-  version      Print the build version
-
-Run 'cerberus <command> -help' for command-specific flags.
-`
-
 func main() {
-	if len(os.Args) < 2 {
-		fmt.Fprint(os.Stderr, usage)
-		os.Exit(1)
+	rootCmd := &cobra.Command{
+		Use:   "cerberus",
+		Short: "multi-agent parallel problem solver",
+		Long:  "cerberus - run multiple AI agents in parallel to solve problems",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return cmd.Help()
+		},
 	}
 
-	cmd := os.Args[1]
-	args := os.Args[2:]
+	rootCmd.AddCommand(
+		cmdStartCommand(),
+		cmdRerunCommand(),
+		cmdListCommand(),
+		cmdStatusCommand(),
+		cmdReviewCommand(),
+		cmdApplyCommand(),
+		cmdMergeCommand(),
+		cmdMergeApplyCommand(),
+		cmdLogsCommand(),
+		cmdCleanCommand(),
+		cmdStatsCommand(),
+		cmdVersionCommand(),
+	)
 
-	var err error
-	switch cmd {
-	case "start":
-		err = cmdStart(args)
-	case "rerun":
-		err = cmdRerun(args)
-	case "list":
-		err = cmdList(args)
-	case "status":
-		err = cmdStatus(args)
-	case "review":
-		err = cmdReview(args)
-	case "apply":
-		err = cmdApply(args)
-	case "merge":
-		err = cmdMerge(args)
-	case "merge-apply":
-		err = cmdMergeApply(args)
-	case "logs":
-		err = cmdLogs(args)
-	case "clean":
-		err = cmdClean(args)
-	case "stats":
-		err = cmdStats(args)
-	case "version":
-		fmt.Println(version)
-	case "-help", "--help", "help":
-		fmt.Fprint(os.Stdout, usage)
-	default:
-		fmt.Fprintf(os.Stderr, "unknown command %q\n\n%s", cmd, usage)
+	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
 	}
+}
 
+func cmdStartCommand() *cobra.Command {
+	var sessionName, prompt, promptFile, agentFlag, modelFlag string
+	var nInt int
+
+	cmd := &cobra.Command{
+		Use:   "start",
+		Short: "Create a session worktree and run agents",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return cmdStart(sessionName, nInt, prompt, promptFile, agentFlag, modelFlag)
+		},
+	}
+
+	cmd.Flags().StringVar(&sessionName, "session", "", "session name (required; must be unique within the repo)")
+	cmd.Flags().IntVar(&nInt, "n", 0, "number of solutions (default: number of runners in config)")
+	cmd.Flags().StringVar(&prompt, "prompt", "", "prompt to send to each agent (required)")
+	cmd.Flags().StringVar(&promptFile, "prompt-file", "", "read prompt from file instead of -prompt")
+	cmd.Flags().StringVar(&agentFlag, "agent", "opencode", "agent to use when not set in config")
+	cmd.Flags().StringVar(&modelFlag, "model", "", "model to use when not set in config")
+
+	cmd.RegisterFlagCompletionFunc("session", completionSessions)
+
+	return cmd
+}
+
+func cmdRerunCommand() *cobra.Command {
+	var sessionFlag string
+	var solution int
+	var prompt, promptFile string
+
+	cmd := &cobra.Command{
+		Use:   "rerun",
+		Short: "Run the agent again in an existing solution worktree",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return cmdRerun(sessionFlag, solution, prompt, promptFile)
+		},
+	}
+
+	cmd.Flags().StringVar(&sessionFlag, "session", "", "session name (required if multiple sessions are active)")
+	cmd.Flags().IntVar(&solution, "solution", 0, "solution index to rerun (required)")
+	cmd.Flags().StringVar(&prompt, "prompt", "", "follow-up prompt for the agent (required)")
+	cmd.Flags().StringVar(&promptFile, "prompt-file", "", "read prompt from file instead of -prompt")
+
+	cmd.RegisterFlagCompletionFunc("session", completionSessions)
+
+	return cmd
+}
+
+func cmdListCommand() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "list",
+		Short: "List all active sessions in the current repo",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return cmdList()
+		},
+	}
+
+	return cmd
+}
+
+func cmdStatusCommand() *cobra.Command {
+	var sessionFlag string
+
+	cmd := &cobra.Command{
+		Use:   "status",
+		Short: "Show the status of a session's solutions",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return cmdStatus(sessionFlag)
+		},
+	}
+
+	cmd.Flags().StringVar(&sessionFlag, "session", "", "session name (required if multiple sessions are active)")
+
+	cmd.RegisterFlagCompletionFunc("session", completionSessions)
+
+	return cmd
+}
+
+func cmdReviewCommand() *cobra.Command {
+	var sessionFlag string
+	var diffFlag bool
+
+	cmd := &cobra.Command{
+		Use:   "review",
+		Short: "Print a summary of what each solution changed",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return cmdReview(sessionFlag, diffFlag)
+		},
+	}
+
+	cmd.Flags().StringVar(&sessionFlag, "session", "", "session name (required if multiple sessions are active)")
+	cmd.Flags().BoolVar(&diffFlag, "diff", false, "print full unified diffs (default: file names only)")
+
+	cmd.RegisterFlagCompletionFunc("session", completionSessions)
+
+	return cmd
+}
+
+func cmdApplyCommand() *cobra.Command {
+	var sessionFlag string
+	var solution int
+
+	cmd := &cobra.Command{
+		Use:   "apply",
+		Short: "Cherry-pick a solution's commits onto the current branch",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return cmdApply(sessionFlag, solution)
+		},
+	}
+
+	cmd.Flags().StringVar(&sessionFlag, "session", "", "session name (required if multiple sessions are active)")
+	cmd.Flags().IntVar(&solution, "solution", 0, "solution index to apply (required)")
+
+	cmd.RegisterFlagCompletionFunc("session", completionSessions)
+
+	return cmd
+}
+
+func cmdMergeCommand() *cobra.Command {
+	var sessionFlag, model string
+
+	cmd := &cobra.Command{
+		Use:   "merge",
+		Short: "Ask an LLM to analyse all solutions and produce a merge suggestion",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return cmdMerge(sessionFlag, model)
+		},
+	}
+
+	cmd.Flags().StringVar(&sessionFlag, "session", "", "session name (required if multiple sessions are active)")
+	cmd.Flags().StringVar(&model, "model", "", "model to use for the merge (default: opencode's configured default)")
+
+	cmd.RegisterFlagCompletionFunc("session", completionSessions)
+
+	return cmd
+}
+
+func cmdMergeApplyCommand() *cobra.Command {
+	var sessionFlag string
+
+	cmd := &cobra.Command{
+		Use:   "merge-apply",
+		Short: "Apply the merge suggestion, commit, and clean up the session",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return cmdMergeApply(sessionFlag)
+		},
+	}
+
+	cmd.Flags().StringVar(&sessionFlag, "session", "", "session name (required if multiple sessions are active)")
+
+	cmd.RegisterFlagCompletionFunc("session", completionSessions)
+
+	return cmd
+}
+
+func cmdLogsCommand() *cobra.Command {
+	var sessionFlag string
+
+	cmd := &cobra.Command{
+		Use:   "logs",
+		Short: "Tail all solution logs, printing only the message field",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return cmdLogs(sessionFlag)
+		},
+	}
+
+	cmd.Flags().StringVar(&sessionFlag, "session", "", "session name (required if multiple sessions are active)")
+
+	cmd.RegisterFlagCompletionFunc("session", completionSessions)
+
+	return cmd
+}
+
+func cmdCleanCommand() *cobra.Command {
+	var sessionFlag string
+	var force bool
+
+	cmd := &cobra.Command{
+		Use:   "clean",
+		Short: "Remove a session's worktrees, branches, and state",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return cmdClean(sessionFlag, force)
+		},
+	}
+
+	cmd.Flags().StringVar(&sessionFlag, "session", "", "session name (required if multiple sessions are active)")
+	cmd.Flags().BoolVar(&force, "force", false, "skip confirmation prompt")
+
+	cmd.RegisterFlagCompletionFunc("session", completionSessions)
+
+	return cmd
+}
+
+func cmdStatsCommand() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "stats",
+		Short: "Show model performance statistics across all sessions",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return cmdStats()
+		},
+	}
+
+	return cmd
+}
+
+func cmdVersionCommand() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "version",
+		Short: "Print the build version",
+		Run: func(cmd *cobra.Command, args []string) {
+			fmt.Println(version)
+		},
+	}
+
+	return cmd
+}
+
+func completionSessions(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+	repoRoot, err := resolveRepoRoot()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: %s\n", err)
-		os.Exit(1)
+		return nil, cobra.ShellCompDirectiveNoFileComp
 	}
+	sessions, err := config.ListSessions(repoRoot)
+	if err != nil {
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
+	return sessions, cobra.ShellCompDirectiveNoFileComp
 }
 
 // resolveRepoRoot finds the git repo root from the current directory.
@@ -126,39 +314,19 @@ func resolveSession(repoRoot, name string) (string, error) {
 // cmdStart creates git worktrees and runs N agents in parallel, blocking until
 // all finish. After each agent completes successfully, any changes are
 // committed inside the worktree and the commit hash is stored in state.
-func cmdStart(args []string) error {
+func cmdStart(sessionName string, n int, prompt, promptFile, agentFlag, modelFlag string) error {
 	userCfg, err := config.LoadUserConfig()
 	if err != nil {
 		return err
 	}
 
-	fs := flag.NewFlagSet("start", flag.ExitOnError)
-	fs.Usage = func() {
-		fmt.Fprint(os.Stderr, `Usage: cerberus start -session <name> [flags]
-
-Flags:
-`)
-		fs.PrintDefaults()
-	}
-
-	sessionName := fs.String("session", "", "session name (required; must be unique within the repo)")
-	n := fs.Int("n", 0, "number of solutions (default: number of runners in config)")
-	prompt := fs.String("prompt", "", "prompt to send to each agent (required)")
-	promptFile := fs.String("prompt-file", "", "read prompt from file instead of -prompt")
-	agentFlag := fs.String("agent", "opencode", "agent to use when not set in config")
-	modelFlag := fs.String("model", "", "model to use when not set in config")
-
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
-
-	if *sessionName == "" {
+	if sessionName == "" {
 		return fmt.Errorf("-session is required (e.g. -session frontend-refactor)")
 	}
 
-	resolvedPrompt := strings.TrimSpace(*prompt)
-	if *promptFile != "" {
-		data, err := os.ReadFile(*promptFile)
+	resolvedPrompt := strings.TrimSpace(prompt)
+	if promptFile != "" {
+		data, err := os.ReadFile(promptFile)
 		if err != nil {
 			return fmt.Errorf("read prompt file: %w", err)
 		}
@@ -176,18 +344,18 @@ Flags:
 	// Build the runner list.
 	runners := userCfg.Runners
 	if len(runners) == 0 {
-		count := *n
+		count := n
 		if count == 0 {
 			count = 2
 		}
 		for range count {
-			runners = append(runners, config.Runner{Agent: *agentFlag, Model: *modelFlag})
+			runners = append(runners, config.Runner{Agent: agentFlag, Model: modelFlag})
 		}
-	} else if *n > 0 {
-		for len(runners) < *n {
+	} else if n > 0 {
+		for len(runners) < n {
 			runners = append(runners, runners[len(runners)-1])
 		}
-		runners = runners[:*n]
+		runners = runners[:n]
 	}
 
 	if len(runners) == 0 {
@@ -206,8 +374,8 @@ Flags:
 	}
 
 	// Refuse to start if this session name is already in use.
-	if _, err := config.Load(repoRoot, *sessionName); err == nil {
-		return fmt.Errorf("session %q already exists; run 'cerberus clean -session %s' first", *sessionName, *sessionName)
+	if _, err := config.Load(repoRoot, sessionName); err == nil {
+		return fmt.Errorf("session %q already exists; run 'cerberus clean -session %s' first", sessionName, sessionName)
 	}
 
 	baseBranch, err := git.CurrentBranch(repoRoot)
@@ -219,12 +387,12 @@ Flags:
 		return err
 	}
 
-	fmt.Printf("session: %s\n", *sessionName)
+	fmt.Printf("session: %s\n", sessionName)
 	fmt.Printf("branch:  %s (%s)\n", baseBranch, baseCommit[:8])
 	fmt.Printf("agents:  %d\n\n", len(runners))
 
 	state := &config.State{
-		Name:       *sessionName,
+		Name:       sessionName,
 		BaseBranch: baseBranch,
 		BaseCommit: baseCommit,
 		Prompt:     resolvedPrompt,
@@ -233,14 +401,14 @@ Flags:
 
 	for i, r := range runners {
 		idx := i + 1
-		wtPath, branch, err := git.CreateWorktree(repoRoot, *sessionName, idx, baseCommit)
+		wtPath, branch, err := git.CreateWorktree(repoRoot, sessionName, idx, baseCommit)
 		if err != nil {
 			for j := 1; j < idx; j++ {
-				_ = git.RemoveWorktree(repoRoot, *sessionName, j)
+				_ = git.RemoveWorktree(repoRoot, sessionName, j)
 			}
 			return err
 		}
-		logPath := config.LogPath(repoRoot, *sessionName, idx)
+		logPath := config.LogPath(repoRoot, sessionName, idx)
 		state.Solutions = append(state.Solutions, config.Solution{
 			Index:    idx,
 			Branch:   branch,
@@ -446,7 +614,7 @@ Flags:
 	if failed > 0 {
 		return fmt.Errorf("%d solution(s) failed; check logs above", failed)
 	}
-	fmt.Printf("\nrun 'cerberus review -session %s' to see what changed\n", *sessionName)
+	fmt.Printf("\nrun 'cerberus review -session %s' to see what changed\n", sessionName)
 	return nil
 }
 
@@ -456,34 +624,14 @@ Flags:
 // agent's work, so the follow-up prompt can reference and build on it.
 // Each rerun stacks a new commit on the solution branch; apply cherry-picks
 // the whole range.
-func cmdRerun(args []string) error {
-	fs := flag.NewFlagSet("rerun", flag.ExitOnError)
-	fs.Usage = func() {
-		fmt.Fprint(os.Stderr, `Usage: cerberus rerun -solution <n> -prompt <text> [-session <name>]
-
-Run the agent again in an existing solution's worktree with a new prompt.
-The previous agent changes are already committed in the worktree; the follow-up
-runs on top of them and adds another commit. Use 'cerberus apply' when done to
-cherry-pick all commits onto the current branch.
-
-Flags:
-`)
-		fs.PrintDefaults()
-	}
-	sessionFlag := fs.String("session", "", "session name (required if multiple sessions are active)")
-	solution := fs.Int("solution", 0, "solution index to rerun (required)")
-	prompt := fs.String("prompt", "", "follow-up prompt for the agent (required)")
-	promptFile := fs.String("prompt-file", "", "read prompt from file instead of -prompt")
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
-	if *solution == 0 {
+func cmdRerun(sessionFlag string, solution int, prompt, promptFile string) error {
+	if solution == 0 {
 		return fmt.Errorf("-solution is required")
 	}
 
-	resolvedPrompt := strings.TrimSpace(*prompt)
-	if *promptFile != "" {
-		data, err := os.ReadFile(*promptFile)
+	resolvedPrompt := strings.TrimSpace(prompt)
+	if promptFile != "" {
+		data, err := os.ReadFile(promptFile)
 		if err != nil {
 			return fmt.Errorf("read prompt file: %w", err)
 		}
@@ -497,7 +645,7 @@ Flags:
 	if err != nil {
 		return err
 	}
-	sessionName, err := resolveSession(repoRoot, *sessionFlag)
+	sessionName, err := resolveSession(repoRoot, sessionFlag)
 	if err != nil {
 		return err
 	}
@@ -509,13 +657,13 @@ Flags:
 
 	var sol *config.Solution
 	for i := range state.Solutions {
-		if state.Solutions[i].Index == *solution {
+		if state.Solutions[i].Index == solution {
 			sol = &state.Solutions[i]
 			break
 		}
 	}
 	if sol == nil {
-		return fmt.Errorf("solution %d not found in session %q", *solution, sessionName)
+		return fmt.Errorf("solution %d not found in session %q", solution, sessionName)
 	}
 	if sol.Status == config.StatusRunning && processAlive(sol.PID) {
 		return fmt.Errorf("solve-%d is still running; wait for it to finish first", sol.Index)
@@ -540,7 +688,7 @@ Flags:
 	}
 	defer logFile.Close()
 
-	fmt.Printf("rerunning [%s/solve-%d] with new prompt...\n", sessionName, *solution)
+	fmt.Printf("rerunning [%s/solve-%d] with new prompt...\n", sessionName, solution)
 	fmt.Fprintf(logFile, "\n--- rerun: %s ---\n", time.Now().Format(time.RFC3339))
 
 	cmd := exec.Command(cmdArgs[0], cmdArgs[1:]...)
@@ -594,7 +742,7 @@ Flags:
 	pw.Close()
 	fanWg.Wait()
 
-	label := fmt.Sprintf("[%s/solve-%d] ", sessionName, *solution)
+	label := fmt.Sprintf("[%s/solve-%d] ", sessionName, solution)
 
 	if runErr != nil {
 		sol.Status = config.StatusFailed
@@ -627,20 +775,12 @@ Flags:
 	_ = config.Save(repoRoot, state)
 
 	fmt.Printf("%scommit %s  %s\n", label, commitHash[:8], commitMsg)
-	fmt.Printf("\nrun 'cerberus apply -session %s -solution %d' when ready\n", sessionName, *solution)
+	fmt.Printf("\nrun 'cerberus apply -session %s -solution %d' when ready\n", sessionName, solution)
 	return nil
 }
 
 // cmdList lists all active sessions in the current repo.
-func cmdList(args []string) error {
-	fs := flag.NewFlagSet("list", flag.ExitOnError)
-	fs.Usage = func() {
-		fmt.Fprint(os.Stderr, "Usage: cerberus list\n\nList all active sessions in the current repo.\n")
-	}
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
-
+func cmdList() error {
 	repoRoot, err := resolveRepoRoot()
 	if err != nil {
 		return err
@@ -688,21 +828,12 @@ func cmdList(args []string) error {
 }
 
 // cmdStatus prints the current state of a session's solutions.
-func cmdStatus(args []string) error {
-	fs := flag.NewFlagSet("status", flag.ExitOnError)
-	fs.Usage = func() {
-		fmt.Fprint(os.Stderr, "Usage: cerberus status [-session <name>]\n\nShow the status of each solution in a session.\n")
-	}
-	sessionFlag := fs.String("session", "", "session name (required if multiple sessions are active)")
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
-
+func cmdStatus(sessionFlag string) error {
 	repoRoot, err := resolveRepoRoot()
 	if err != nil {
 		return err
 	}
-	sessionName, err := resolveSession(repoRoot, *sessionFlag)
+	sessionName, err := resolveSession(repoRoot, sessionFlag)
 	if err != nil {
 		return err
 	}
@@ -733,21 +864,12 @@ func cmdStatus(args []string) error {
 }
 
 // cmdLogs tails all solution log files for a session.
-func cmdLogs(args []string) error {
-	fs := flag.NewFlagSet("logs", flag.ExitOnError)
-	fs.Usage = func() {
-		fmt.Fprint(os.Stderr, "Usage: cerberus logs [-session <name>]\n\nTail all solution logs, printing only the message field.\n")
-	}
-	sessionFlag := fs.String("session", "", "session name (required if multiple sessions are active)")
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
-
+func cmdLogs(sessionFlag string) error {
 	repoRoot, err := resolveRepoRoot()
 	if err != nil {
 		return err
 	}
-	sessionName, err := resolveSession(repoRoot, *sessionFlag)
+	sessionName, err := resolveSession(repoRoot, sessionFlag)
 	if err != nil {
 		return err
 	}
@@ -798,23 +920,12 @@ func cmdLogs(args []string) error {
 }
 
 // cmdReview prints the changed files and diffs for each solution in a session.
-func cmdReview(args []string) error {
-	fs := flag.NewFlagSet("review", flag.ExitOnError)
-	fs.Usage = func() {
-		fmt.Fprint(os.Stderr, "Usage: cerberus review [-session <name>] [-diff]\n\nPrint changed files and diffs for each solution.\n\nFlags:\n")
-		fs.PrintDefaults()
-	}
-	sessionFlag := fs.String("session", "", "session name (required if multiple sessions are active)")
-	diffFlag := fs.Bool("diff", false, "print full unified diffs (default: file names only)")
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
-
+func cmdReview(sessionFlag string, diffFlag bool) error {
 	repoRoot, err := resolveRepoRoot()
 	if err != nil {
 		return err
 	}
-	sessionName, err := resolveSession(repoRoot, *sessionFlag)
+	sessionName, err := resolveSession(repoRoot, sessionFlag)
 	if err != nil {
 		return err
 	}
@@ -851,7 +962,7 @@ func cmdReview(args []string) error {
 			fmt.Printf("  %s\n", f)
 		}
 
-		if *diffFlag {
+		if diffFlag {
 			fmt.Println()
 			var diffErr error
 			if sol.CommitHash != "" {
@@ -869,28 +980,12 @@ func cmdReview(args []string) error {
 }
 
 // cmdApply cherry-picks the chosen solution's commit onto the current branch.
-func cmdApply(args []string) error {
-	fs := flag.NewFlagSet("apply", flag.ExitOnError)
-	fs.Usage = func() {
-		fmt.Fprint(os.Stderr, `Usage: cerberus apply -solution <n> [-session <name>]
-
-Cherry-pick all commits from solution N onto the current branch.
-
-Flags:
-`)
-		fs.PrintDefaults()
-	}
-	sessionFlag := fs.String("session", "", "session name (required if multiple sessions are active)")
-	solution := fs.Int("solution", 0, "solution index to apply (required)")
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
-
+func cmdApply(sessionFlag string, solution int) error {
 	repoRoot, err := resolveRepoRoot()
 	if err != nil {
 		return err
 	}
-	sessionName, err := resolveSession(repoRoot, *sessionFlag)
+	sessionName, err := resolveSession(repoRoot, sessionFlag)
 	if err != nil {
 		return err
 	}
@@ -900,9 +995,9 @@ Flags:
 		return err
 	}
 
-	if *solution == 0 {
+	if solution == 0 {
 		if len(state.Solutions) == 1 {
-			*solution = 1
+			solution = 1
 		} else {
 			return fmt.Errorf("-solution is required")
 		}
@@ -910,13 +1005,13 @@ Flags:
 
 	var sol *config.Solution
 	for i := range state.Solutions {
-		if state.Solutions[i].Index == *solution {
+		if state.Solutions[i].Index == solution {
 			sol = &state.Solutions[i]
 			break
 		}
 	}
 	if sol == nil {
-		return fmt.Errorf("solution %d not found in session %q", *solution, sessionName)
+		return fmt.Errorf("solution %d not found in session %q", solution, sessionName)
 	}
 
 	if sol.CommitHash == "" {
@@ -980,29 +1075,12 @@ Flags:
 }
 
 // cmdMerge collects all solution diffs for a session and sends them to an LLM.
-func cmdMerge(args []string) error {
-	fs := flag.NewFlagSet("merge", flag.ExitOnError)
-	fs.Usage = func() {
-		fmt.Fprint(os.Stderr, `Usage: cerberus merge [-session <name>] [flags]
-
-Send all solution diffs to an LLM and stream its merge suggestion.
-The full response is saved to the session directory for use by 'cerberus merge-apply'.
-
-Flags:
-`)
-		fs.PrintDefaults()
-	}
-	sessionFlag := fs.String("session", "", "session name (required if multiple sessions are active)")
-	model := fs.String("model", "", "model to use for the merge (default: opencode's configured default)")
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
-
+func cmdMerge(sessionFlag, model string) error {
 	repoRoot, err := resolveRepoRoot()
 	if err != nil {
 		return err
 	}
-	sessionName, err := resolveSession(repoRoot, *sessionFlag)
+	sessionName, err := resolveSession(repoRoot, sessionFlag)
 	if err != nil {
 		return err
 	}
@@ -1064,8 +1142,8 @@ Flags:
 	mergePrompt := b.String()
 
 	ocArgs := []string{"opencode", "run", "--format", "json"}
-	if *model != "" {
-		ocArgs = append(ocArgs, "-m", *model)
+	if model != "" {
+		ocArgs = append(ocArgs, "-m", model)
 	}
 	ocArgs = append(ocArgs, mergePrompt)
 
@@ -1128,24 +1206,12 @@ Flags:
 }
 
 // cmdMergeApply reads the merge suggestion for a session, writes files, and commits.
-func cmdMergeApply(args []string) error {
-	fs := flag.NewFlagSet("merge-apply", flag.ExitOnError)
-	fs.Usage = func() {
-		fmt.Fprint(os.Stderr, `Usage: cerberus merge-apply [-session <name>]
-
-Apply the merge suggestion from 'cerberus merge', create a commit, and clean up the session.
-`)
-	}
-	sessionFlag := fs.String("session", "", "session name (required if multiple sessions are active)")
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
-
+func cmdMergeApply(sessionFlag string) error {
 	repoRoot, err := resolveRepoRoot()
 	if err != nil {
 		return err
 	}
-	sessionName, err := resolveSession(repoRoot, *sessionFlag)
+	sessionName, err := resolveSession(repoRoot, sessionFlag)
 	if err != nil {
 		return err
 	}
@@ -1248,22 +1314,12 @@ func extractFileBlocks(text string) (map[string]string, error) {
 }
 
 // cmdClean removes a session's worktrees, branches, opencode sessions, and state.
-func cmdClean(args []string) error {
-	fs := flag.NewFlagSet("clean", flag.ExitOnError)
-	fs.Usage = func() {
-		fmt.Fprint(os.Stderr, "Usage: cerberus clean [-session <name>] [-force]\n\nRemove a session's worktrees, branches, opencode sessions, and state.\n")
-	}
-	sessionFlag := fs.String("session", "", "session name (required if multiple sessions are active)")
-	force := fs.Bool("force", false, "skip confirmation prompt")
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
-
+func cmdClean(sessionFlag string, force bool) error {
 	repoRoot, err := resolveRepoRoot()
 	if err != nil {
 		return err
 	}
-	sessionName, err := resolveSession(repoRoot, *sessionFlag)
+	sessionName, err := resolveSession(repoRoot, sessionFlag)
 	if err != nil {
 		return err
 	}
@@ -1273,7 +1329,7 @@ func cmdClean(args []string) error {
 		return err
 	}
 
-	if !*force {
+	if !force {
 		fmt.Printf("clean session %q: %d worktree(s) will be removed.\n", sessionName, len(state.Solutions))
 		fmt.Print("continue? [y/N] ")
 		var answer string
@@ -1342,15 +1398,7 @@ func recordStats(state *config.State, winnerIndex int) error {
 }
 
 // cmdStats reads the global stats file and prints a per-model summary.
-func cmdStats(args []string) error {
-	fs := flag.NewFlagSet("stats", flag.ExitOnError)
-	fs.Usage = func() {
-		fmt.Fprint(os.Stderr, "Usage: cerberus stats\n\nShow a summary of model performance across all sessions.\n")
-	}
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
-
+func cmdStats() error {
 	records, err := config.LoadStats()
 	if err != nil {
 		return err
@@ -1422,11 +1470,4 @@ func truncate(s string, max int) string {
 		return s
 	}
 	return s[:max-3] + "..."
-}
-
-func or(s, fallback string) string {
-	if s != "" {
-		return s
-	}
-	return fallback
 }
