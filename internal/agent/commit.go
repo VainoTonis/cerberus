@@ -15,7 +15,17 @@ import (
 // so callers can always proceed with a commit.
 func AskForCommitMessage(worktreePath, diff string) string {
 	prompt := fmt.Sprintf(
-		"Write a concise git commit message (subject line only, maximum 72 characters, no quotes, no punctuation at end) that describes the following changes:\n\n%s",
+		"Write a git commit message for the following diff using the Conventional Commits format.\n"+
+			"\n"+
+			"Format: <type>(<scope>): <description>\n"+
+			"\n"+
+			"Rules:\n"+
+			"- type: feat, fix, refactor, perf, test, docs, chore — pick the most accurate\n"+
+			"- scope: a short noun describing what was changed (e.g. graph, auth, worktree, config) — infer it from the files or code changed\n"+
+			"- description: imperative mood, lowercase, no period, max 72 chars total including type and scope\n"+
+			"- output the subject line only, no body, no markdown, no quotes\n"+
+			"\n"+
+			"Diff:\n%s",
 		diff,
 	)
 
@@ -28,7 +38,7 @@ func AskForCommitMessage(worktreePath, diff string) string {
 	cmd.Stderr = pw
 
 	if err := cmd.Start(); err != nil {
-		return "cerberus: agent solution"
+		return "chore(cerberus): agent solution"
 	}
 
 	var collected strings.Builder
@@ -59,7 +69,7 @@ func AskForCommitMessage(worktreePath, diff string) string {
 
 	msg := extractFirstLine(collected.String())
 	if msg == "" {
-		return "cerberus: agent solution"
+		return "chore(cerberus): agent solution"
 	}
 	if len(msg) > 72 {
 		msg = msg[:72]

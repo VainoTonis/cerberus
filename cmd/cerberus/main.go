@@ -1021,7 +1021,7 @@ Flags:
 	fmt.Fprintf(&b, "Below are the unified diffs produced by each solution. Please analyse them, identify the strengths and weaknesses of each approach, and produce a single best merged solution.\n\n")
 	fmt.Fprintf(&b, "For each file that needs to change, output the COMPLETE file content inside a fenced code block annotated with the file path, like this:\n\n")
 	fmt.Fprintf(&b, "```path/to/file.go\n<full file content here>\n```\n\n")
-	fmt.Fprintf(&b, "After all file blocks, write a single line starting with exactly 'COMMIT_MESSAGE:' followed by a concise commit message (subject line only, max 72 chars).\n\n")
+	fmt.Fprintf(&b, "After all file blocks, write a single line starting with exactly 'COMMIT_MESSAGE:' followed by a commit message in Conventional Commits format: <type>(<scope>): <description> — subject line only, max 72 chars total, imperative mood, lowercase, no period.\n\n")
 	fmt.Fprintf(&b, "---\n\n")
 
 	for _, d := range diffs {
@@ -1147,7 +1147,7 @@ Apply the merge suggestion from 'cerberus merge', create a commit, and clean up 
 		}
 	}
 	if commitMsg == "" {
-		commitMsg = "cerberus: merged solutions"
+		commitMsg = "chore(cerberus): merged solutions"
 	}
 
 	files, err := extractFileBlocks(suggestion)
