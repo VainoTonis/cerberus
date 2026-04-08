@@ -885,9 +885,6 @@ Flags:
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	if *solution == 0 {
-		return fmt.Errorf("-solution is required")
-	}
 
 	repoRoot, err := resolveRepoRoot()
 	if err != nil {
@@ -901,6 +898,14 @@ Flags:
 	state, err := config.Load(repoRoot, sessionName)
 	if err != nil {
 		return err
+	}
+
+	if *solution == 0 {
+		if len(state.Solutions) == 1 {
+			*solution = 1
+		} else {
+			return fmt.Errorf("-solution is required")
+		}
 	}
 
 	var sol *config.Solution
