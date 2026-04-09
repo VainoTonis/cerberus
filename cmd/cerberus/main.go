@@ -226,17 +226,19 @@ func cmdLogsCommand() *cobra.Command {
 func cmdCleanCommand() *cobra.Command {
 	var sessionFlag string
 	var force bool
+	var all bool
 
 	cmd := &cobra.Command{
 		Use:   "clean",
 		Short: "Remove a session's worktrees, branches, and state",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return cmdClean(sessionFlag, force)
+			return cmdClean(sessionFlag, force, all)
 		},
 	}
 
 	cmd.Flags().StringVar(&sessionFlag, "session", "", "session name (required if multiple sessions are active)")
 	cmd.Flags().BoolVar(&force, "force", false, "skip confirmation prompt")
+	cmd.Flags().BoolVar(&all, "all", false, "clean all sessions in the repo")
 
 	cmd.RegisterFlagCompletionFunc("session", completionSessions)
 
@@ -1314,11 +1316,55 @@ func extractFileBlocks(text string) (map[string]string, error) {
 }
 
 // cmdClean removes a session's worktrees, branches, opencode sessions, and state.
-func cmdClean(sessionFlag string, force bool) error {
+// When all is true, it cleans all sessions in the repo instead of a single session.
+func cmdClean(sessionFlag string, force bool, all bool) error {
 	repoRoot, err := resolveRepoRoot()
 	if err != nil {
 		return err
 	}
+
+	if all {
+		// Clean all sessions
+		sessions, err := config.ListSessions(repoRoot)
+		if err != nil {
+			return err
+		}
+
+		if len(sessions) == 0 {
+			fmt.Println("no sessions to clean")
+			return nil
+		}
+
+		if !force {
+			fmt.Printf("clean all sessions (%d): %d session(s) will be removed.\n", len(sessions), len(sessions))
+			fmt.Print("continue? [y/N] ")
+			var answer string
+			fmt.Scanln(&answer)
+			if strings.ToLower(strings.TrimSpace(answer)) != "y" {
+				fmt.Println("aborted.")
+				return nil
+			}
+		}
+
+		var errs []string
+		for _, name := range sessions {
+			state, err := config.Load(repoRoot, name)
+			if err != nil {
+				errs = append(errs, fmt.Sprintf("load session %s: %s", name, err))
+				continue
+			}
+			if err := cleanSession(repoRoot, state); err != nil {
+				errs = append(errs, fmt.Sprintf("clean session %s: %s", name, err))
+			}
+		}
+
+		if len(errs) > 0 {
+			return fmt.Errorf("clean completed with errors:\n  %s", strings.Join(errs, "\n  "))
+		}
+		return nil
+	}
+
+	// Single session clean
 	sessionName, err := resolveSession(repoRoot, sessionFlag)
 	if err != nil {
 		return err
