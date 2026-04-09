@@ -499,6 +499,7 @@ func cmdStart(sessionName string, n int, prompt, promptFile, agentFlag, modelFla
 						Part      struct {
 							Text   string `json:"text"`
 							Tokens struct {
+								Total  int `json:"total"`
 								Input  int `json:"input"`
 								Output int `json:"output"`
 								Cache  struct {
@@ -525,7 +526,7 @@ func cmdStart(sessionName string, n int, prompt, promptFile, agentFlag, modelFla
 							fmt.Println(agentPrefix + event.Message)
 						case event.Type == "step_finish":
 							mu.Lock()
-							sol.InputTokens += event.Part.Tokens.Input
+							sol.InputTokens += event.Part.Tokens.Total
 							sol.OutputTokens += event.Part.Tokens.Output
 							sol.CacheReadTokens += event.Part.Tokens.Cache.Read
 							sol.CacheWriteTokens += event.Part.Tokens.Cache.Write
@@ -733,6 +734,7 @@ func cmdRerun(sessionFlag string, solution int, prompt, promptFile string) error
 				Part struct {
 					Text   string `json:"text"`
 					Tokens struct {
+						Total  int `json:"total"`
 						Input  int `json:"input"`
 						Output int `json:"output"`
 						Cache  struct {
@@ -751,7 +753,7 @@ func cmdRerun(sessionFlag string, solution int, prompt, promptFile string) error
 				case event.Message != "":
 					fmt.Println(agentPrefix + event.Message)
 				case event.Type == "step_finish":
-					sol.InputTokens += event.Part.Tokens.Input
+					sol.InputTokens += event.Part.Tokens.Total
 					sol.OutputTokens += event.Part.Tokens.Output
 					sol.CacheReadTokens += event.Part.Tokens.Cache.Read
 					sol.CacheWriteTokens += event.Part.Tokens.Cache.Write
@@ -1559,9 +1561,9 @@ func cmdStats() error {
 
 	// Table 2: Per-session history (most recent first, capped at 20)
 	fmt.Println()
-	fmt.Printf("%-18s  %10s  %-30s  %8s  %10s  %8s  %8s  %10s\n",
+	fmt.Printf("%-18s  %-16s  %-30s  %8s  %10s  %8s  %8s  %10s\n",
 		"Session", "Date", "Runner", "Status", "Duration", "Input", "Output", "Cost")
-	fmt.Println(strings.Repeat("-", 104))
+	fmt.Println(strings.Repeat("-", 110))
 
 	// Reverse records to show most recent first, then cap at 20
 	var displayRecords []config.StatsRecord
@@ -1570,7 +1572,7 @@ func cmdStats() error {
 	}
 
 	for _, rec := range displayRecords {
-		sessionDate := rec.SessionDate.Format("2006-01-02")
+		sessionDate := rec.SessionDate.Format("2006-01-02 15:04")
 		sessionName := truncate(rec.SessionName, 18)
 		firstRunner := true
 		for _, r := range rec.Runners {
@@ -1599,7 +1601,7 @@ func cmdStats() error {
 				firstRunner = false
 			}
 
-			fmt.Printf("%-18s  %10s  %-30s  %8s  %10s  %8d  %8d  %10s\n",
+			fmt.Printf("%-18s  %-16s  %-30s  %8s  %10s  %8d  %8d  %10s\n",
 				displaySession, sessionDate, runner, status, durationStr, r.InputTokens, r.OutputTokens, costStr)
 		}
 	}
