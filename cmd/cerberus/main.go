@@ -497,7 +497,16 @@ func cmdStart(sessionName string, n int, prompt, promptFile, agentFlag, modelFla
 						SessionID string `json:"sessionID"`
 						Type      string `json:"type"`
 						Part      struct {
-							Text string `json:"text"`
+							Text   string `json:"text"`
+							Tokens struct {
+								Input  int `json:"input"`
+								Output int `json:"output"`
+								Cache  struct {
+									Read  int `json:"read"`
+									Write int `json:"write"`
+								} `json:"cache"`
+							} `json:"tokens"`
+							Cost float64 `json:"cost"`
 						} `json:"part"`
 						Message string `json:"message"`
 					}
@@ -514,6 +523,15 @@ func cmdStart(sessionName string, n int, prompt, promptFile, agentFlag, modelFla
 							fmt.Print(agentPrefix + event.Part.Text)
 						case event.Message != "":
 							fmt.Println(agentPrefix + event.Message)
+						case event.Type == "step_finish":
+							mu.Lock()
+							sol.InputTokens += event.Part.Tokens.Input
+							sol.OutputTokens += event.Part.Tokens.Output
+							sol.CacheReadTokens += event.Part.Tokens.Cache.Read
+							sol.CacheWriteTokens += event.Part.Tokens.Cache.Write
+							sol.CostUSD += event.Part.Cost
+							_ = config.Save(repoRoot, state)
+							mu.Unlock()
 						}
 					} else {
 						// Not JSON — print as-is (e.g. plain stderr from the agent).
@@ -713,7 +731,16 @@ func cmdRerun(sessionFlag string, solution int, prompt, promptFile string) error
 			var event struct {
 				Type string `json:"type"`
 				Part struct {
-					Text string `json:"text"`
+					Text   string `json:"text"`
+					Tokens struct {
+						Input  int `json:"input"`
+						Output int `json:"output"`
+						Cache  struct {
+							Read  int `json:"read"`
+							Write int `json:"write"`
+						} `json:"cache"`
+					} `json:"tokens"`
+					Cost float64 `json:"cost"`
 				} `json:"part"`
 				Message string `json:"message"`
 			}
@@ -723,6 +750,13 @@ func cmdRerun(sessionFlag string, solution int, prompt, promptFile string) error
 					fmt.Print(agentPrefix + event.Part.Text)
 				case event.Message != "":
 					fmt.Println(agentPrefix + event.Message)
+				case event.Type == "step_finish":
+					sol.InputTokens += event.Part.Tokens.Input
+					sol.OutputTokens += event.Part.Tokens.Output
+					sol.CacheReadTokens += event.Part.Tokens.Cache.Read
+					sol.CacheWriteTokens += event.Part.Tokens.Cache.Write
+					sol.CostUSD += event.Part.Cost
+					_ = config.Save(repoRoot, state)
 				}
 			} else {
 				fmt.Println(agentPrefix + line)
@@ -1438,12 +1472,22 @@ func recordStats(state *config.State, winnerIndex int) error {
 		if !sol.StartedAt.IsZero() && !sol.FinishedAt.IsZero() {
 			r.DurationS = sol.FinishedAt.Sub(sol.StartedAt).Seconds()
 		}
+		r.InputTokens = sol.InputTokens
+		r.OutputTokens = sol.OutputTokens
+		r.CacheReadTokens = sol.CacheReadTokens
+		r.CacheWriteTokens = sol.CacheWriteTokens
+		r.CostUSD = sol.CostUSD
 		rec.Runners = append(rec.Runners, r)
+	}
+	for _, r := range rec.Runners {
+		rec.TotalCostUSD += r.CostUSD
 	}
 	return config.AppendStats(rec)
 }
 
-// cmdStats reads the global stats file and prints a per-model summary.
+// cmdStats reads the global stats file and prints two tables:
+// 1. Per-model aggregate statistics
+// 2. Per-session history (most recent first, capped at 20)
 func cmdStats() error {
 	records, err := config.LoadStats()
 	if err != nil {
@@ -1459,6 +1503,9 @@ func cmdStats() error {
 		wins      int
 		totalDurS float64
 		durationN int
+		inputTok  int
+		outputTok int
+		costUSD   float64
 	}
 	byModel := map[string]*modelStats{}
 
@@ -1483,11 +1530,16 @@ func cmdStats() error {
 				ms.totalDurS += r.DurationS
 				ms.durationN++
 			}
+			ms.inputTok += r.InputTokens
+			ms.outputTok += r.OutputTokens
+			ms.costUSD += r.CostUSD
 		}
 	}
 
-	fmt.Printf("%-52s  %5s  %5s  %5s  %12s\n", "Model", "Runs", "Wins", "Win%", "Avg duration")
-	fmt.Println(strings.Repeat("-", 80))
+	// Table 1: Per-model aggregate
+	fmt.Printf("%-40s  %5s  %5s  %5s  %10s  %11s  %11s  %10s\n",
+		"Model", "Runs", "Wins", "Win%", "Avg dur", "Input tok", "Output tok", "Cost USD")
+	fmt.Println(strings.Repeat("-", 95))
 	for model, ms := range byModel {
 		winPct := 0.0
 		if ms.runs > 0 {
@@ -1497,8 +1549,61 @@ func cmdStats() error {
 		if ms.durationN > 0 {
 			avgDur = fmt.Sprintf("%.0fs", ms.totalDurS/float64(ms.durationN))
 		}
-		fmt.Printf("%-52s  %5d  %5d  %4.0f%%  %12s\n", truncate(model, 52), ms.runs, ms.wins, winPct, avgDur)
+		cost := "-"
+		if ms.costUSD > 0 {
+			cost = fmt.Sprintf("$%.4f", ms.costUSD)
+		}
+		fmt.Printf("%-40s  %5d  %5d  %4.0f%%  %10s  %11d  %11d  %10s\n",
+			truncate(model, 40), ms.runs, ms.wins, winPct, avgDur, ms.inputTok, ms.outputTok, cost)
 	}
+
+	// Table 2: Per-session history (most recent first, capped at 20)
+	fmt.Println()
+	fmt.Printf("%-18s  %10s  %-30s  %8s  %10s  %8s  %8s  %10s\n",
+		"Session", "Date", "Runner", "Status", "Duration", "Input", "Output", "Cost")
+	fmt.Println(strings.Repeat("-", 104))
+
+	// Reverse records to show most recent first, then cap at 20
+	var displayRecords []config.StatsRecord
+	for i := len(records) - 1; i >= 0 && len(displayRecords) < 20; i-- {
+		displayRecords = append(displayRecords, records[i])
+	}
+
+	for _, rec := range displayRecords {
+		sessionDate := rec.SessionDate.Format("2006-01-02")
+		sessionName := truncate(rec.SessionName, 18)
+		firstRunner := true
+		for _, r := range rec.Runners {
+			runner := r.Model
+			if runner == "" {
+				runner = "(default)"
+			}
+			if r.OcAgent != "" {
+				runner = runner + " / " + r.OcAgent
+			}
+			runner = truncate(runner, 30)
+
+			status := r.Status
+			durationStr := "-"
+			if r.DurationS > 0 {
+				durationStr = fmt.Sprintf("%.0fs", r.DurationS)
+			}
+			costStr := "-"
+			if r.CostUSD > 0 {
+				costStr = fmt.Sprintf("$%.4f", r.CostUSD)
+			}
+
+			displaySession := ""
+			if firstRunner {
+				displaySession = sessionName
+				firstRunner = false
+			}
+
+			fmt.Printf("%-18s  %10s  %-30s  %8s  %10s  %8d  %8d  %10s\n",
+				displaySession, sessionDate, runner, status, durationStr, r.InputTokens, r.OutputTokens, costStr)
+		}
+	}
+
 	fmt.Printf("\n%d session(s) recorded\n", len(records))
 	return nil
 }

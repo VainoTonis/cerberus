@@ -65,20 +65,25 @@ const (
 )
 
 type Solution struct {
-	Index      int            `json:"index"`
-	Branch     string         `json:"branch"`
-	Worktree   string         `json:"worktree"`
-	Agent      string         `json:"agent"`
-	Model      string         `json:"model"`
-	OcAgent    string         `json:"oc_agent,omitempty"`
-	Status     SolutionStatus `json:"status"`
-	PID        int            `json:"pid,omitempty"`
-	LogFile    string         `json:"log_file,omitempty"`
-	ExitCode   int            `json:"exit_code,omitempty"`
-	SessionID  string         `json:"session_id,omitempty"`
-	CommitHash string         `json:"commit_hash,omitempty"`
-	StartedAt  time.Time      `json:"started_at,omitempty"`
-	FinishedAt time.Time      `json:"finished_at,omitempty"`
+	Index            int            `json:"index"`
+	Branch           string         `json:"branch"`
+	Worktree         string         `json:"worktree"`
+	Agent            string         `json:"agent"`
+	Model            string         `json:"model"`
+	OcAgent          string         `json:"oc_agent,omitempty"`
+	Status           SolutionStatus `json:"status"`
+	PID              int            `json:"pid,omitempty"`
+	LogFile          string         `json:"log_file,omitempty"`
+	ExitCode         int            `json:"exit_code,omitempty"`
+	SessionID        string         `json:"session_id,omitempty"`
+	CommitHash       string         `json:"commit_hash,omitempty"`
+	StartedAt        time.Time      `json:"started_at,omitempty"`
+	FinishedAt       time.Time      `json:"finished_at,omitempty"`
+	InputTokens      int            `json:"input_tokens,omitempty"`
+	OutputTokens     int            `json:"output_tokens,omitempty"`
+	CacheReadTokens  int            `json:"cache_read_tokens,omitempty"`
+	CacheWriteTokens int            `json:"cache_write_tokens,omitempty"`
+	CostUSD          float64        `json:"cost_usd,omitempty"`
 }
 
 type State struct {
@@ -180,10 +185,15 @@ const StatsFile = "stats.json"
 
 // StatsRunner is a snapshot of a single solution's outcome recorded in the stats file.
 type StatsRunner struct {
-	Model     string  `json:"model"`
-	OcAgent   string  `json:"oc_agent,omitempty"`
-	Status    string  `json:"status"`
-	DurationS float64 `json:"duration_s,omitempty"`
+	Model            string  `json:"model"`
+	OcAgent          string  `json:"oc_agent,omitempty"`
+	Status           string  `json:"status"`
+	DurationS        float64 `json:"duration_s,omitempty"`
+	InputTokens      int     `json:"input_tokens,omitempty"`
+	OutputTokens     int     `json:"output_tokens,omitempty"`
+	CacheReadTokens  int     `json:"cache_read_tokens,omitempty"`
+	CacheWriteTokens int     `json:"cache_write_tokens,omitempty"`
+	CostUSD          float64 `json:"cost_usd,omitempty"`
 }
 
 // StatsRecord is one entry appended to the global stats file each time
@@ -195,6 +205,7 @@ type StatsRecord struct {
 	BaseBranch    string        `json:"base_branch"`
 	WinnerIndex   int           `json:"winner_index"` // 0 means no winner was applied
 	Runners       []StatsRunner `json:"runners"`
+	TotalCostUSD  float64       `json:"total_cost_usd,omitempty"`
 }
 
 func statsPath() (string, error) {
