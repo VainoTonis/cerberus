@@ -526,7 +526,7 @@ func cmdStart(sessionName string, n int, prompt, promptFile, agentFlag, modelFla
 							fmt.Println(agentPrefix + event.Message)
 						case event.Type == "step_finish":
 							mu.Lock()
-							sol.InputTokens += event.Part.Tokens.Total
+							sol.InputTokens += event.Part.Tokens.Input
 							sol.OutputTokens += event.Part.Tokens.Output
 							sol.CacheReadTokens += event.Part.Tokens.Cache.Read
 							sol.CacheWriteTokens += event.Part.Tokens.Cache.Write
@@ -753,7 +753,7 @@ func cmdRerun(sessionFlag string, solution int, prompt, promptFile string) error
 				case event.Message != "":
 					fmt.Println(agentPrefix + event.Message)
 				case event.Type == "step_finish":
-					sol.InputTokens += event.Part.Tokens.Total
+					sol.InputTokens += event.Part.Tokens.Input
 					sol.OutputTokens += event.Part.Tokens.Output
 					sol.CacheReadTokens += event.Part.Tokens.Cache.Read
 					sol.CacheWriteTokens += event.Part.Tokens.Cache.Write
