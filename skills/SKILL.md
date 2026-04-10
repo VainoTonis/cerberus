@@ -42,12 +42,12 @@ Pick a short, descriptive name (e.g. `frontend-refactor`, `auth-bugfix`).
 
 **Single-agent isolation (primary use case):**
 ```bash
-cerberus start --session <name> --n 1 --prompt "<prompt>"
+cerberus --session <name> start --n 1 --prompt "<prompt>"
 ```
 
 **Multi-agent parallel comparison:**
 ```bash
-cerberus start --session <name> --prompt "<prompt>"
+cerberus --session <name> start --prompt "<prompt>"
 ```
 
 After each agent finishes, cerberus automatically commits changes inside the worktree and records the commit hash in state.
@@ -56,7 +56,7 @@ After each agent finishes, cerberus automatically commits changes inside the wor
 
 Poll with:
 ```bash
-cerberus status --session <name>
+cerberus --session <name> status
 ```
 
 Expected terminal states: `done` or `failed`. The status `running (process gone)` means the process exited but cerberus did not record a commit — this usually means the agent finished but failed to commit. Check the worktree directly:
@@ -72,39 +72,39 @@ git -C .cerberus/sessions/<name>/worktrees/solve-1 add <files>
 git -C .cerberus/sessions/<name>/worktrees/solve-1 commit -m "<message>"
 # get the hash from above, then:
 git cherry-pick <hash>
-cerberus clean --session <name> --force
+cerberus --session <name> clean --force
 ```
 
 If there are no changes at all, the agent did nothing — kill and retry with a tighter prompt.
 
 ### 4. Review
 ```bash
-cerberus review --session <name> --diff
+cerberus --session <name> review --diff
 ```
 
 ### 5a. Apply a solution
 Cherry-picks all commits from the solution branch onto the current branch:
 ```bash
-cerberus apply --session <name> --solution <N>
+cerberus --session <name> apply --solution <N>
 ```
 On conflict, git is left in cherry-pick state. Resolve then `git cherry-pick --continue`, or abort with `git cherry-pick --abort`.
 
 Then clean up:
 ```bash
-cerberus clean --session <name> --force
+cerberus --session <name> clean --force
 ```
 
 ### 5b. Iterate on a solution
 If the solution has a flaw, run the agent again in the same worktree with a follow-up prompt:
 ```bash
-cerberus rerun --session <name> --solution <N> --prompt "<follow-up prompt>"
+cerberus --session <name> rerun --solution <N> --prompt "<follow-up prompt>"
 ```
 This stacks a new commit on the solution branch. Review again, then apply when satisfied. Each `rerun` adds another commit; `apply` cherry-picks the whole range.
 
 ### 5c. Merge solutions (multi-agent only)
 ```bash
-cerberus merge --session <name>
-cerberus merge-apply --session <name>
+cerberus --session <name> merge
+cerberus --session <name> merge-apply
 ```
 `merge-apply` commits the result and automatically cleans up the session — no separate `clean` needed.
 
@@ -119,19 +119,19 @@ If only one session is active, `--session` can be omitted from all commands exce
 
 ## Cerberus CLI reference
 
-All flags use `--` (double dash), not `-`:
+All flags use `--` (double dash), not `-`. `--session` is a global flag and goes before the subcommand:
 
 ```
-cerberus start       --session <name> [--prompt <text>] [--prompt-file <path>] [--n <int>] [--agent <name>] [--model <provider/model>]
-cerberus rerun       --solution <N> --prompt <text> [--session <name>] [--prompt-file <path>]
+cerberus --session <name> start       [--prompt <text>] [--prompt-file <path>] [--n <int>] [--agent <name>] [--model <provider/model>]
+cerberus --session <name> rerun       --solution <N> --prompt <text> [--prompt-file <path>]
 cerberus list
-cerberus status      [--session <name>]
-cerberus review      [--session <name>] [--diff]
-cerberus apply       --solution <N> [--session <name>]
-cerberus merge       [--session <name>] [--model <provider/model>]
-cerberus merge-apply [--session <name>]
-cerberus logs        [--session <name>]
-cerberus clean       [--session <name>] [--force]
+cerberus --session <name> status      [--diff]
+cerberus --session <name> review      [--diff]
+cerberus --session <name> apply       --solution <N>
+cerberus --session <name> merge       [--model <provider/model>]
+cerberus --session <name> merge-apply
+cerberus --session <name> logs
+cerberus --session <name> clean       [--force]
 cerberus stats
 ```
 
