@@ -15,7 +15,8 @@ import (
 // so callers can always proceed with a commit.
 func AskForCommitMessage(worktreePath, diff string) string {
 	prompt := fmt.Sprintf(
-		"Write a git commit message for the following diff using the Conventional Commits format.\n"+
+		"You are a cerberus sub-agent. Output only a git commit message — do not use cerberus or any other tool.\n\n"+
+			"Write a git commit message for the following diff using the Conventional Commits format.\n"+
 			"\n"+
 			"Format: <type>(<scope>): <description>\n"+
 			"\n"+

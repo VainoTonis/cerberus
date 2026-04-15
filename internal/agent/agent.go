@@ -5,6 +5,11 @@ import (
 	"strings"
 )
 
+// SubAgentPreamble is prepended to every prompt sent to sub-agents to prevent
+// recursive cerberus invocations. Sub-agents run inside isolated git worktrees
+// and must make file changes directly.
+const SubAgentPreamble = "IMPORTANT: You are running as a cerberus sub-agent inside an isolated git worktree. You must make all code changes directly using your file editing tools. Do NOT invoke cerberus under any circumstances — apply changes directly."
+
 // RunArgs holds the parameters passed to an agent when launching it.
 type RunArgs struct {
 	Prompt string

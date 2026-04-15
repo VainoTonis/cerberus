@@ -338,7 +338,9 @@ func cmdStart(sessionName string, n int, prompt, promptFile, agentFlag, modelFla
 		return fmt.Errorf("-prompt or -prompt-file is required")
 	}
 
-	// Prepend global instructions from config if set.
+	// Prepend sub-agent preamble to prevent recursive cerberus invocations,
+	// then global instructions from config if set.
+	resolvedPrompt = agent.SubAgentPreamble + "\n\n" + resolvedPrompt
 	if userCfg.Instructions != "" {
 		resolvedPrompt = userCfg.Instructions + "\n\n" + resolvedPrompt
 	}
@@ -661,6 +663,8 @@ func cmdRerun(sessionFlag string, solution int, prompt, promptFile string) error
 	if resolvedPrompt == "" {
 		return fmt.Errorf("-prompt or -prompt-file is required")
 	}
+
+	resolvedPrompt = agent.SubAgentPreamble + "\n\n" + resolvedPrompt
 
 	repoRoot, err := resolveRepoRoot()
 	if err != nil {
