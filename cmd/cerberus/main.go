@@ -1105,7 +1105,7 @@ func cmdApply(sessionFlag string, solution int) error {
 
 	fmt.Println("done.")
 
-	if err := recordStats(state, sol.Index); err != nil {
+	if err := recordStats(state, sol.Index, false); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: could not record stats: %s\n", err)
 	}
 
@@ -1300,7 +1300,7 @@ func cmdMergeApply(sessionFlag string) error {
 
 	fmt.Printf("committed: %s\n", commitMsg)
 
-	if err := recordStats(state, 0); err != nil {
+	if err := recordStats(state, 0, false); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: could not record stats: %s\n", err)
 	}
 
@@ -1430,6 +1430,20 @@ func cmdClean(sessionFlag string, force bool, all bool) error {
 func cleanSession(repoRoot string, state *config.State) error {
 	var errs []string
 
+	// Record stats for any tokens consumed, even if session is discarded.
+	var hasTokens bool
+	for _, sol := range state.Solutions {
+		if sol.InputTokens+sol.OutputTokens+sol.CacheReadTokens+sol.CacheWriteTokens > 0 {
+			hasTokens = true
+			break
+		}
+	}
+	if hasTokens {
+		if err := recordStats(state, -1, true); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: could not record stats: %s\n", err)
+		}
+	}
+
 	for _, sol := range state.Solutions {
 		if sol.SessionID == "" {
 			continue
@@ -1457,13 +1471,14 @@ func cleanSession(repoRoot string, state *config.State) error {
 }
 
 // recordStats builds a StatsRecord from state and appends it to the global stats file.
-func recordStats(state *config.State, winnerIndex int) error {
+func recordStats(state *config.State, winnerIndex int, cleaned bool) error {
 	rec := config.StatsRecord{
 		SessionDate:   time.Now(),
 		SessionName:   state.Name,
 		PromptSnippet: truncate(state.Prompt, 80),
 		BaseBranch:    state.BaseBranch,
 		WinnerIndex:   winnerIndex,
+		Cleaned:       cleaned,
 	}
 	for _, sol := range state.Solutions {
 		r := config.StatsRunner{
@@ -1574,6 +1589,9 @@ func cmdStats() error {
 	for _, rec := range displayRecords {
 		sessionDate := rec.SessionDate.Format("2006-01-02 15:04")
 		sessionName := truncate(rec.SessionName, 18)
+		if rec.Cleaned {
+			sessionName = truncate(rec.SessionName, 9) + "(cleaned)"
+		}
 		firstRunner := true
 		for _, r := range rec.Runners {
 			runner := r.Model

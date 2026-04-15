@@ -203,7 +203,8 @@ type StatsRecord struct {
 	SessionName   string        `json:"session_name"`
 	PromptSnippet string        `json:"prompt_snippet"`
 	BaseBranch    string        `json:"base_branch"`
-	WinnerIndex   int           `json:"winner_index"` // 0 means no winner was applied
+	WinnerIndex   int           `json:"winner_index"` // 0 means no winner was applied; -1 means cleaned without applying
+	Cleaned       bool          `json:"cleaned,omitempty"`
 	Runners       []StatsRunner `json:"runners"`
 	TotalCostUSD  float64       `json:"total_cost_usd,omitempty"`
 }
