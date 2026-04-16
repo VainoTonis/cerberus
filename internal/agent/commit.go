@@ -9,18 +9,24 @@ import (
 	"strings"
 )
 
-func withAssistedBy(base, model string) string {
-	if model == "" {
-		return base
+func buildAssistedBy(workerModel, callerModel string) string {
+	switch {
+	case callerModel != "" && workerModel != "":
+		return "\n\nAssisted-by: " + callerModel + " (orchestrator), " + workerModel + " (worker)"
+	case callerModel != "":
+		return "\n\nAssisted-by: " + callerModel + " (orchestrator)"
+	case workerModel != "":
+		return "\n\nAssisted-by: " + workerModel
+	default:
+		return ""
 	}
-	return base + "\n\nAssisted-by: " + model
 }
 
 // AskForCommitMessage runs opencode in worktreePath to generate a commit
 // message for the given diff. It returns a single subject line (≤72 chars).
 // On any failure it returns a safe fallback message rather than an error,
 // so callers can always proceed with a commit.
-func AskForCommitMessage(worktreePath, diff, model string) string {
+func AskForCommitMessage(worktreePath, diff, model, callerModel string) string {
 	prompt := fmt.Sprintf(
 		"You are a cerberus sub-agent. Output only a git commit message — do not use cerberus or any other tool.\n\n"+
 			"Write a git commit message for the following diff using the Conventional Commits format.\n"+
@@ -46,7 +52,7 @@ func AskForCommitMessage(worktreePath, diff, model string) string {
 	cmd.Stderr = pw
 
 	if err := cmd.Start(); err != nil {
-		return withAssistedBy("chore(cerberus): agent solution", model)
+		return "chore(cerberus): agent solution" + buildAssistedBy(model, callerModel)
 	}
 
 	var collected strings.Builder
@@ -77,12 +83,12 @@ func AskForCommitMessage(worktreePath, diff, model string) string {
 
 	msg := extractFirstLine(collected.String())
 	if msg == "" {
-		return withAssistedBy("chore(cerberus): agent solution", model)
+		return "chore(cerberus): agent solution" + buildAssistedBy(model, callerModel)
 	}
 	if len(msg) > 72 {
 		msg = msg[:72]
 	}
-	return withAssistedBy(msg, model)
+	return msg + buildAssistedBy(model, callerModel)
 }
 
 func extractFirstLine(s string) string {

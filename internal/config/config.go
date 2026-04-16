@@ -87,12 +87,13 @@ type Solution struct {
 }
 
 type State struct {
-	Name       string         `json:"name"`
-	BaseBranch string         `json:"base_branch"`
-	BaseCommit string         `json:"base_commit"`
-	Prompt     string         `json:"prompt"`
-	Solutions  []Solution     `json:"solutions"`
-	Selections map[string]int `json:"selections"`
+	Name        string         `json:"name"`
+	BaseBranch  string         `json:"base_branch"`
+	BaseCommit  string         `json:"base_commit"`
+	Prompt      string         `json:"prompt"`
+	CallerModel string         `json:"caller_model,omitempty"`
+	Solutions   []Solution     `json:"solutions"`
+	Selections  map[string]int `json:"selections"`
 }
 
 // sessionDir returns the directory for a named session's state.

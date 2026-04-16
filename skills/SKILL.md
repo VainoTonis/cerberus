@@ -40,14 +40,16 @@ Pick a short, descriptive name (e.g. `frontend-refactor`, `auth-bugfix`).
 
 ### 2. Run the agent
 
+Always pass `--caller` with your own model ID so it is recorded in the commit message.
+
 **Single-agent isolation (primary use case):**
 ```bash
-cerberus --session <name> start --n 1 --prompt "<prompt>"
+cerberus --session <name> start --n 1 --caller <your-model-id> --prompt "<prompt>"
 ```
 
 **Multi-agent parallel comparison:**
 ```bash
-cerberus --session <name> start --prompt "<prompt>"
+cerberus --session <name> start --caller <your-model-id> --prompt "<prompt>"
 ```
 
 After each agent finishes, cerberus automatically commits changes inside the worktree and records the commit hash in state.
@@ -122,7 +124,7 @@ If only one session is active, `--session` can be omitted from all commands exce
 All flags use `--` (double dash), not `-`. `--session` is a global flag and goes before the subcommand:
 
 ```
-cerberus --session <name> start       [--prompt <text>] [--prompt-file <path>] [--n <int>] [--agent <name>] [--model <provider/model>]
+cerberus --session <name> start       [--prompt <text>] [--prompt-file <path>] [--n <int>] [--agent <name>] [--model <provider/model>] [--caller <provider/model>]
 cerberus --session <name> rerun       --solution <N> --prompt <text> [--prompt-file <path>]
 cerberus list
 cerberus --session <name> status      [--diff]

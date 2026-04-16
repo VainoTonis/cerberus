@@ -52,14 +52,14 @@ func main() {
 }
 
 func cmdStartCommand() *cobra.Command {
-	var sessionName, prompt, promptFile, agentFlag, modelFlag string
+	var sessionName, prompt, promptFile, agentFlag, modelFlag, callerModel string
 	var nInt int
 
 	cmd := &cobra.Command{
 		Use:   "start",
 		Short: "Create a session worktree and run agents",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return cmdStart(sessionName, nInt, prompt, promptFile, agentFlag, modelFlag)
+			return cmdStart(sessionName, nInt, prompt, promptFile, agentFlag, modelFlag, callerModel)
 		},
 	}
 
@@ -69,6 +69,7 @@ func cmdStartCommand() *cobra.Command {
 	cmd.Flags().StringVar(&promptFile, "prompt-file", "", "read prompt from file instead of -prompt")
 	cmd.Flags().StringVar(&agentFlag, "agent", "opencode", "agent to use when not set in config")
 	cmd.Flags().StringVar(&modelFlag, "model", "", "model to use when not set in config")
+	cmd.Flags().StringVar(&callerModel, "caller", "", "model that is orchestrating this session (recorded in commit messages)")
 
 	cmd.RegisterFlagCompletionFunc("session", completionSessions)
 
@@ -316,7 +317,7 @@ func resolveSession(repoRoot, name string) (string, error) {
 // cmdStart creates git worktrees and runs N agents in parallel, blocking until
 // all finish. After each agent completes successfully, any changes are
 // committed inside the worktree and the commit hash is stored in state.
-func cmdStart(sessionName string, n int, prompt, promptFile, agentFlag, modelFlag string) error {
+func cmdStart(sessionName string, n int, prompt, promptFile, agentFlag, modelFlag, callerModel string) error {
 	userCfg, err := config.LoadUserConfig()
 	if err != nil {
 		return err
@@ -396,11 +397,12 @@ func cmdStart(sessionName string, n int, prompt, promptFile, agentFlag, modelFla
 	fmt.Printf("agents:  %d\n\n", len(runners))
 
 	state := &config.State{
-		Name:       sessionName,
-		BaseBranch: baseBranch,
-		BaseCommit: baseCommit,
-		Prompt:     resolvedPrompt,
-		Selections: map[string]int{},
+		Name:        sessionName,
+		BaseBranch:  baseBranch,
+		BaseCommit:  baseCommit,
+		Prompt:      resolvedPrompt,
+		CallerModel: callerModel,
+		Selections:  map[string]int{},
 	}
 
 	for i, r := range runners {
@@ -603,7 +605,7 @@ func cmdStart(sessionName string, n int, prompt, promptFile, agentFlag, modelFla
 				diff = ""
 			}
 
-			commitMsg := agent.AskForCommitMessage(sol.Worktree, diff, sol.Model)
+			commitMsg := agent.AskForCommitMessage(sol.Worktree, diff, sol.Model, state.CallerModel)
 			commitHash, err := git.CommitAndGetHash(sol.Worktree, commitMsg)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "%scommit failed: %s\n", label, err)
@@ -807,7 +809,7 @@ func cmdRerun(sessionFlag string, solution int, prompt, promptFile string) error
 	fmt.Printf("%scommitting...\n", label)
 
 	diff, _ := git.Diff(sol.Worktree, state.BaseCommit)
-	commitMsg := agent.AskForCommitMessage(sol.Worktree, diff, sol.Model)
+	commitMsg := agent.AskForCommitMessage(sol.Worktree, diff, sol.Model, state.CallerModel)
 	commitHash, err := git.CommitAndGetHash(sol.Worktree, commitMsg)
 	if err != nil {
 		return fmt.Errorf("%scommit failed: %w", label, err)
@@ -1283,15 +1285,22 @@ func cmdMergeApply(sessionFlag string) error {
 	}
 
 	seen := make(map[string]bool)
-	var models []string
+	var workerModels []string
 	for _, s := range state.Solutions {
 		if s.Model != "" && !seen[s.Model] {
 			seen[s.Model] = true
-			models = append(models, s.Model)
+			workerModels = append(workerModels, s.Model)
 		}
 	}
-	if len(models) > 0 {
-		commitMsg = commitMsg + "\n\nAssisted-by: " + strings.Join(models, ", ")
+	if state.CallerModel != "" || len(workerModels) > 0 {
+		var parts []string
+		if state.CallerModel != "" {
+			parts = append(parts, state.CallerModel+" (orchestrator)")
+		}
+		for _, m := range workerModels {
+			parts = append(parts, m+" (worker)")
+		}
+		commitMsg = commitMsg + "\n\nAssisted-by: " + strings.Join(parts, ", ")
 	}
 
 	files, err := extractFileBlocks(suggestion)
