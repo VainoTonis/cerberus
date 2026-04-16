@@ -9,11 +9,18 @@ import (
 	"strings"
 )
 
+func withAssistedBy(base, model string) string {
+	if model == "" {
+		return base
+	}
+	return base + "\n\nAssisted-by: " + model
+}
+
 // AskForCommitMessage runs opencode in worktreePath to generate a commit
 // message for the given diff. It returns a single subject line (≤72 chars).
 // On any failure it returns a safe fallback message rather than an error,
 // so callers can always proceed with a commit.
-func AskForCommitMessage(worktreePath, diff string) string {
+func AskForCommitMessage(worktreePath, diff, model string) string {
 	prompt := fmt.Sprintf(
 		"You are a cerberus sub-agent. Output only a git commit message — do not use cerberus or any other tool.\n\n"+
 			"Write a git commit message for the following diff using the Conventional Commits format.\n"+
@@ -39,7 +46,7 @@ func AskForCommitMessage(worktreePath, diff string) string {
 	cmd.Stderr = pw
 
 	if err := cmd.Start(); err != nil {
-		return "chore(cerberus): agent solution"
+		return withAssistedBy("chore(cerberus): agent solution", model)
 	}
 
 	var collected strings.Builder
@@ -70,12 +77,12 @@ func AskForCommitMessage(worktreePath, diff string) string {
 
 	msg := extractFirstLine(collected.String())
 	if msg == "" {
-		return "chore(cerberus): agent solution"
+		return withAssistedBy("chore(cerberus): agent solution", model)
 	}
 	if len(msg) > 72 {
 		msg = msg[:72]
 	}
-	return msg
+	return withAssistedBy(msg, model)
 }
 
 func extractFirstLine(s string) string {

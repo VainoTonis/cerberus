@@ -603,7 +603,7 @@ func cmdStart(sessionName string, n int, prompt, promptFile, agentFlag, modelFla
 				diff = ""
 			}
 
-			commitMsg := agent.AskForCommitMessage(sol.Worktree, diff)
+			commitMsg := agent.AskForCommitMessage(sol.Worktree, diff, sol.Model)
 			commitHash, err := git.CommitAndGetHash(sol.Worktree, commitMsg)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "%scommit failed: %s\n", label, err)
@@ -807,7 +807,7 @@ func cmdRerun(sessionFlag string, solution int, prompt, promptFile string) error
 	fmt.Printf("%scommitting...\n", label)
 
 	diff, _ := git.Diff(sol.Worktree, state.BaseCommit)
-	commitMsg := agent.AskForCommitMessage(sol.Worktree, diff)
+	commitMsg := agent.AskForCommitMessage(sol.Worktree, diff, sol.Model)
 	commitHash, err := git.CommitAndGetHash(sol.Worktree, commitMsg)
 	if err != nil {
 		return fmt.Errorf("%scommit failed: %w", label, err)
@@ -1280,6 +1280,18 @@ func cmdMergeApply(sessionFlag string) error {
 	}
 	if commitMsg == "" {
 		commitMsg = "chore(cerberus): merged solutions"
+	}
+
+	seen := make(map[string]bool)
+	var models []string
+	for _, s := range state.Solutions {
+		if s.Model != "" && !seen[s.Model] {
+			seen[s.Model] = true
+			models = append(models, s.Model)
+		}
+	}
+	if len(models) > 0 {
+		commitMsg = commitMsg + "\n\nAssisted-by: " + strings.Join(models, ", ")
 	}
 
 	files, err := extractFileBlocks(suggestion)
