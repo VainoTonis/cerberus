@@ -24,14 +24,20 @@ cat ~/.config/cerberus/config.json
 
 ## Writing good prompts
 
-The most common failure mode is giving the agent too much to do. Agents get stuck when a prompt requires too many decisions, touches multiple files, or involves non-trivial logic in more than one place.
+### Core rule: orchestrator never writes code in a prompt. Ever.
 
-Rules:
-- **One logical change per session.** If you have two fixes, run two sessions.
-- **Keep prompts short and concrete.** Show the exact before/after code when possible — don't describe what to do in prose if you can just show it.
-- **Do not ask for tests in the same prompt as the implementation.** If tests are needed, run a second session after the first is applied.
-- **Do not ask the agent to explore or understand the codebase.** Give it the file path, function name, and exactly what to change. It should not need to search.
-- If a session runs for more than ~60 seconds without completing, assume the prompt was too broad. Kill it and split the work.
+Orchestrator job: understand intent, find right file/function, write a goal. Sub-agent job: read the code, figure out exact change, apply it.
+
+**Good prompt** = relative file path + function name + goal in 1-2 sentences.
+**Bad prompt** = anything with before/after code, line numbers, or pre-solved change.
+
+If sub-agent gets it wrong → **stop. ask the user.** Do not autonomously write a fix. User saw the diff, user knows what's wrong. Take their description, turn it into a `rerun` prompt. Still no code from orchestrator.
+
+### Rules
+- One logical change per session. Two fixes = two sessions.
+- No tests in implementation prompt. Tests = separate session after apply.
+- No broad exploration. File + function is enough — agent reads that, nothing else.
+- Sessions running >60s = prompt too broad. Kill, split.
 
 ## Workflow
 
