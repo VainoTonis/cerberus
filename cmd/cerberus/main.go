@@ -280,8 +280,7 @@ func cmdStart(sessionName, prompt, promptFile, agentFlag, modelFlag, imageFlag s
 		return fmt.Errorf("--prompt or --prompt-file is required")
 	}
 
-	// Prepend sub-agent preamble
-	resolvedPrompt = agent.SubAgentPreamble + "\n\n" + resolvedPrompt
+	// Prepend user instructions if configured
 	if userCfg.Instructions != "" {
 		resolvedPrompt = userCfg.Instructions + "\n\n" + resolvedPrompt
 	}
@@ -413,9 +412,7 @@ func cmdStart(sessionName, prompt, promptFile, agentFlag, modelFlag, imageFlag s
 		diff = ""
 	}
 
-	// AskForCommitMessage takes (worktreePath, diff, model, callerModel)
-	// Since we removed callerModel, we pass empty string
-	commitMsg := agent.AskForCommitMessage(wtPath, diff, model, "")
+	commitMsg := agent.AskForCommitMessage(wtPath, diff, model)
 	commitHash, err := git.CommitAndGetHash(wtPath, commitMsg)
 	if err != nil {
 		return fmt.Errorf("commit failed: %w", err)
@@ -650,8 +647,6 @@ func cmdRerun(name, prompt, promptFile string) error {
 		return fmt.Errorf("--prompt or --prompt-file is required")
 	}
 
-	resolvedPrompt = agent.SubAgentPreamble + "\n\n" + resolvedPrompt
-
 	// Get agent
 	agentImpl, err := agent.Get(state.Run.Agent)
 	if err != nil {
@@ -706,7 +701,7 @@ func cmdRerun(name, prompt, promptFile string) error {
 	fmt.Printf("[%s] committing...\n", sessionName)
 
 	diff, _ := git.Diff(state.Run.Worktree, state.BaseCommit)
-	commitMsg := agent.AskForCommitMessage(state.Run.Worktree, diff, state.Run.Model, "")
+	commitMsg := agent.AskForCommitMessage(state.Run.Worktree, diff, state.Run.Model)
 	commitHash, err := git.CommitAndGetHash(state.Run.Worktree, commitMsg)
 	if err != nil {
 		return fmt.Errorf("commit failed: %w", err)
