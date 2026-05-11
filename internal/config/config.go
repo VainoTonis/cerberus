@@ -15,22 +15,11 @@ const (
 	ConfigFile = "config.json"
 )
 
-// Runner defines a single agent+model pair used for one solution slot.
-// OcAgent is the opencode agent mode to use (e.g. "build", "plan") - passed
-// as --agent to opencode run. If empty, opencode uses its default.
-type Runner struct {
-	Agent   string `json:"agent"`
-	Model   string `json:"model"`
-	OcAgent string `json:"oc_agent,omitempty"`
-}
-
 // UserConfig holds user-level defaults loaded from ~/.config/cerberus/config.json.
-// Runners defines the ordered list of agent+model pairs to use, one per solution slot.
-// If empty, cerberus falls back to the -agent and -model flags.
-// Instructions is prepended to every prompt sent to agents.
 type UserConfig struct {
-	Runners      []Runner `json:"runners"`
-	Instructions string   `json:"instructions"`
+	Instructions string `json:"instructions"`
+	DefaultModel string `json:"default_model,omitempty"`
+	DefaultImage string `json:"default_image,omitempty"`
 }
 
 // LoadUserConfig reads ~/.config/cerberus/config.json.
@@ -55,45 +44,44 @@ func LoadUserConfig() (UserConfig, error) {
 	return c, nil
 }
 
-type SolutionStatus string
+type RunStatus string
 
 const (
-	StatusPending SolutionStatus = "pending"
-	StatusRunning SolutionStatus = "running"
-	StatusDone    SolutionStatus = "done"
-	StatusFailed  SolutionStatus = "failed"
+	StatusPending RunStatus = "pending"
+	StatusRunning RunStatus = "running"
+	StatusDone    RunStatus = "done"
+	StatusFailed  RunStatus = "failed"
 )
 
-type Solution struct {
-	Index            int            `json:"index"`
-	Branch           string         `json:"branch"`
-	Worktree         string         `json:"worktree"`
-	Agent            string         `json:"agent"`
-	Model            string         `json:"model"`
-	OcAgent          string         `json:"oc_agent,omitempty"`
-	Status           SolutionStatus `json:"status"`
-	PID              int            `json:"pid,omitempty"`
-	LogFile          string         `json:"log_file,omitempty"`
-	ExitCode         int            `json:"exit_code,omitempty"`
-	SessionID        string         `json:"session_id,omitempty"`
-	CommitHash       string         `json:"commit_hash,omitempty"`
-	StartedAt        time.Time      `json:"started_at,omitempty"`
-	FinishedAt       time.Time      `json:"finished_at,omitempty"`
-	InputTokens      int            `json:"input_tokens,omitempty"`
-	OutputTokens     int            `json:"output_tokens,omitempty"`
-	CacheReadTokens  int            `json:"cache_read_tokens,omitempty"`
-	CacheWriteTokens int            `json:"cache_write_tokens,omitempty"`
-	CostUSD          float64        `json:"cost_usd,omitempty"`
+type Run struct {
+	Branch           string    `json:"branch"`
+	Worktree         string    `json:"worktree"`
+	Agent            string    `json:"agent"`
+	Model            string    `json:"model"`
+	OcAgent          string    `json:"oc_agent,omitempty"`
+	Image            string    `json:"image"`
+	ContainerID      string    `json:"container_id,omitempty"`
+	Status           RunStatus `json:"status"`
+	PID              int       `json:"pid,omitempty"`
+	LogFile          string    `json:"log_file,omitempty"`
+	ExitCode         int       `json:"exit_code,omitempty"`
+	SessionID        string    `json:"session_id,omitempty"`
+	CommitHash       string    `json:"commit_hash,omitempty"`
+	StartedAt        time.Time `json:"started_at,omitempty"`
+	FinishedAt       time.Time `json:"finished_at,omitempty"`
+	InputTokens      int       `json:"input_tokens,omitempty"`
+	OutputTokens     int       `json:"output_tokens,omitempty"`
+	CacheReadTokens  int       `json:"cache_read_tokens,omitempty"`
+	CacheWriteTokens int       `json:"cache_write_tokens,omitempty"`
+	CostUSD          float64   `json:"cost_usd,omitempty"`
 }
 
 type State struct {
-	Name        string         `json:"name"`
-	BaseBranch  string         `json:"base_branch"`
-	BaseCommit  string         `json:"base_commit"`
-	Prompt      string         `json:"prompt"`
-	CallerModel string         `json:"caller_model,omitempty"`
-	Solutions   []Solution     `json:"solutions"`
-	Selections  map[string]int `json:"selections"`
+	Name       string `json:"name"`
+	BaseBranch string `json:"base_branch"`
+	BaseCommit string `json:"base_commit"`
+	Prompt     string `json:"prompt"`
+	Run        Run    `json:"run"`
 }
 
 // sessionDir returns the directory for a named session's state.
@@ -106,14 +94,9 @@ func StatePath(repoRoot, name string) string {
 	return filepath.Join(sessionDir(repoRoot, name), StateFile)
 }
 
-// LogPath returns the log file path for a solution within a named session.
-func LogPath(repoRoot, sessionName string, index int) string {
-	return filepath.Join(sessionDir(repoRoot, sessionName), "logs", fmt.Sprintf("solve-%d.log", index))
-}
-
-// MergeSuggestionPath returns the path where cmdMerge writes its suggestion for a session.
-func MergeSuggestionPath(repoRoot, sessionName string) string {
-	return filepath.Join(sessionDir(repoRoot, sessionName), "merge-suggestion.txt")
+// LogPath returns the log file path for a session (single run, no index).
+func LogPath(repoRoot, sessionName string) string {
+	return filepath.Join(sessionDir(repoRoot, sessionName), "logs", "solve.log")
 }
 
 // ListSessions returns the names of all sessions that have a state file in the repo.
@@ -184,30 +167,23 @@ func Remove(repoRoot, name string) error {
 
 const StatsFile = "stats.json"
 
-// StatsRunner is a snapshot of a single solution's outcome recorded in the stats file.
-type StatsRunner struct {
-	Model            string  `json:"model"`
-	OcAgent          string  `json:"oc_agent,omitempty"`
-	Status           string  `json:"status"`
-	DurationS        float64 `json:"duration_s,omitempty"`
-	InputTokens      int     `json:"input_tokens,omitempty"`
-	OutputTokens     int     `json:"output_tokens,omitempty"`
-	CacheReadTokens  int     `json:"cache_read_tokens,omitempty"`
-	CacheWriteTokens int     `json:"cache_write_tokens,omitempty"`
-	CostUSD          float64 `json:"cost_usd,omitempty"`
-}
-
 // StatsRecord is one entry appended to the global stats file each time
-// cerberus records a session outcome (on apply, or explicitly when no solution is chosen).
+// cerberus records a session outcome.
 type StatsRecord struct {
-	SessionDate   time.Time     `json:"session_date"`
-	SessionName   string        `json:"session_name"`
-	PromptSnippet string        `json:"prompt_snippet"`
-	BaseBranch    string        `json:"base_branch"`
-	WinnerIndex   int           `json:"winner_index"` // 0 means no winner was applied; -1 means cleaned without applying
-	Cleaned       bool          `json:"cleaned,omitempty"`
-	Runners       []StatsRunner `json:"runners"`
-	TotalCostUSD  float64       `json:"total_cost_usd,omitempty"`
+	SessionDate      time.Time `json:"session_date"`
+	SessionName      string    `json:"session_name"`
+	PromptSnippet    string    `json:"prompt_snippet"`
+	BaseBranch       string    `json:"base_branch"`
+	Model            string    `json:"model"`
+	OcAgent          string    `json:"oc_agent,omitempty"`
+	Image            string    `json:"image"`
+	Status           string    `json:"status"`
+	DurationS        float64   `json:"duration_s,omitempty"`
+	InputTokens      int       `json:"input_tokens,omitempty"`
+	OutputTokens     int       `json:"output_tokens,omitempty"`
+	CacheReadTokens  int       `json:"cache_read_tokens,omitempty"`
+	CacheWriteTokens int       `json:"cache_write_tokens,omitempty"`
+	CostUSD          float64   `json:"cost_usd,omitempty"`
 }
 
 func statsPath() (string, error) {
