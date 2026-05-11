@@ -98,45 +98,6 @@ func CommitAll(worktreePath, message string) error {
 	return nil
 }
 
-// CommitsBetween returns the list of commit SHAs in the range (baseCommit, tipCommit],
-// oldest first. Used to count how many commits will be cherry-picked.
-func CommitsBetween(dir, baseCommit, tipCommit string) ([]string, error) {
-	out, err := run(dir, "git", "log", "--format=%H", baseCommit+".."+tipCommit)
-	if err != nil {
-		return nil, fmt.Errorf("log %s..%s: %w", baseCommit[:8], tipCommit[:8], err)
-	}
-	out = strings.TrimSpace(out)
-	if out == "" {
-		return nil, nil
-	}
-	hashes := strings.Split(out, "\n")
-	// git log returns newest-first; reverse to oldest-first.
-	for i, j := 0, len(hashes)-1; i < j; i, j = i+1, j-1 {
-		hashes[i], hashes[j] = hashes[j], hashes[i]
-	}
-	return hashes, nil
-}
-
-// CherryPick applies a single commit onto the current branch in repoRoot.
-// On conflict it returns an error; the repo is left in cherry-pick conflict
-// state for the caller to resolve or abort.
-func CherryPick(repoRoot, commitHash string) error {
-	if _, err := run(repoRoot, "git", "cherry-pick", commitHash); err != nil {
-		return fmt.Errorf("cherry-pick %s: %w", commitHash[:8], err)
-	}
-	return nil
-}
-
-// CherryPickRange applies all commits in the range (baseCommit, tipCommit] onto
-// the current branch in repoRoot. On conflict the repo is left in cherry-pick
-// conflict state.
-func CherryPickRange(repoRoot, baseCommit, tipCommit string) error {
-	if _, err := run(repoRoot, "git", "cherry-pick", baseCommit+".."+tipCommit); err != nil {
-		return fmt.Errorf("cherry-pick %s..%s: %w", baseCommit[:8], tipCommit[:8], err)
-	}
-	return nil
-}
-
 // Diff returns the unified diff of all changes in a worktree relative to the
 // base commit, including both committed and uncommitted (working tree) changes.
 func Diff(worktreePath, baseCommit string) (string, error) {
@@ -249,19 +210,6 @@ func removeWorktree(repoRoot, path string) error {
 	_, err := run(repoRoot, "git", "worktree", "remove", "--force", path)
 	if err != nil {
 		return nil
-	}
-	return nil
-}
-
-// WriteFile writes content to a path relative to destRoot, creating parent
-// directories as needed. Used by merge-apply to write LLM-produced file contents.
-func WriteFile(destRoot, relPath, content string) error {
-	destPath := filepath.Join(destRoot, relPath)
-	if err := os.MkdirAll(filepath.Dir(destPath), 0o755); err != nil {
-		return fmt.Errorf("create parent dirs for %s: %w", relPath, err)
-	}
-	if err := os.WriteFile(destPath, []byte(content), 0o644); err != nil {
-		return fmt.Errorf("write %s: %w", relPath, err)
 	}
 	return nil
 }
