@@ -1,0 +1,16 @@
+// Gradle init script — overrides all repository declarations in every project.
+// Mount read-only into agent containers at /root/.gradle/init.d/nexus.gradle
+// Forces all Maven/Gradle dependency and plugin fetches through Nexus.
+
+allprojects {
+    buildscript {
+        repositories {
+            maven { url "http://nexus:8081/repository/maven-proxy/" }
+            maven { url "http://nexus:8081/repository/gradle-plugins-proxy/" }
+        }
+    }
+    repositories {
+        maven { url "http://nexus:8081/repository/maven-proxy/" }
+        maven { url "http://nexus:8081/repository/gradle-plugins-proxy/" }
+    }
+}

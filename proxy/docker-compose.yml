@@ -1,0 +1,48 @@
+networks:
+  sandbox-internal:
+    internal: true
+  nexus-external:
+    driver: bridge
+
+volumes:
+  nexus-data:
+
+services:
+  nexus:
+    image: sonatype/nexus3
+    environment:
+      - INSTALL4J_ADD_VM_PARAMS=-Xms512m -Xmx1g -XX:MaxDirectMemorySize=512m
+    volumes:
+      - nexus-data:/nexus-data
+    ports:
+      - "8081:8081"
+    networks:
+      - sandbox-internal
+      - nexus-external
+    restart: unless-stopped
+    cpuset: "14,15"
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 2g
+        reservations:
+          cpus: '0.5'
+          memory: 1g
+
+  squid:
+    image: ubuntu/squid
+    volumes:
+      - ./squid.conf:/etc/squid/squid.conf:ro
+    networks:
+      - sandbox-internal
+      - nexus-external
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256m
+        reservations:
+          cpus: '0.25'
+          memory: 64m
