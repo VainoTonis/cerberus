@@ -9,24 +9,18 @@ import (
 	"strings"
 )
 
-func buildAssistedBy(workerModel, callerModel string) string {
-	switch {
-	case callerModel != "" && workerModel != "":
-		return "\n\nAssisted-by: " + callerModel + " (orchestrator), " + workerModel + " (worker)"
-	case callerModel != "":
-		return "\n\nAssisted-by: " + callerModel + " (orchestrator)"
-	case workerModel != "":
+func buildAssistedBy(workerModel string) string {
+	if workerModel != "" {
 		return "\n\nAssisted-by: " + workerModel
-	default:
-		return ""
 	}
+	return ""
 }
 
 // AskForCommitMessage runs opencode in worktreePath to generate a commit
 // message for the given diff. It returns a single subject line (≤72 chars).
 // On any failure it returns a safe fallback message rather than an error,
 // so callers can always proceed with a commit.
-func AskForCommitMessage(worktreePath, diff, model, callerModel string) string {
+func AskForCommitMessage(worktreePath, diff, model string) string {
 	prompt := fmt.Sprintf(
 		"You are a cerberus sub-agent. Output only a git commit message — do not use cerberus or any other tool.\n\n"+
 			"Write a git commit message for the following diff using the Conventional Commits format.\n"+
@@ -52,7 +46,7 @@ func AskForCommitMessage(worktreePath, diff, model, callerModel string) string {
 	cmd.Stderr = pw
 
 	if err := cmd.Start(); err != nil {
-		return "chore(cerberus): agent solution" + buildAssistedBy(model, callerModel)
+		return "chore(cerberus): agent solution" + buildAssistedBy(model)
 	}
 
 	var collected strings.Builder
@@ -83,12 +77,12 @@ func AskForCommitMessage(worktreePath, diff, model, callerModel string) string {
 
 	msg := extractFirstLine(collected.String())
 	if msg == "" {
-		return "chore(cerberus): agent solution" + buildAssistedBy(model, callerModel)
+		return "chore(cerberus): agent solution" + buildAssistedBy(model)
 	}
 	if len(msg) > 72 {
 		msg = msg[:72]
 	}
-	return msg + buildAssistedBy(model, callerModel)
+	return msg + buildAssistedBy(model)
 }
 
 func extractFirstLine(s string) string {
