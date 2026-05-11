@@ -34,12 +34,18 @@ type RunArgs struct {
 // Docker run exits when the container process exits; output is streamed to args.Stdout/Stderr.
 func Run(ctx context.Context, args RunArgs) (containerID string, exitCode int, err error) {
 	// Create temporary cidfile to capture container ID.
+	// Generate a unique path by creating and closing the file.
 	cidfile, err := os.CreateTemp("", "docker-cid-*.txt")
 	if err != nil {
 		return "", 0, fmt.Errorf("create cidfile: %w", err)
 	}
 	cidfilePath := cidfile.Name()
 	cidfile.Close()
+	// Remove the file before docker run; docker requires the path to not exist yet.
+	err = os.Remove(cidfilePath)
+	if err != nil {
+		return "", 0, fmt.Errorf("remove cidfile: %w", err)
+	}
 	defer os.Remove(cidfilePath)
 
 	// Build docker run command.
