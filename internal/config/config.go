@@ -74,6 +74,7 @@ type RunStatus string
 const (
 	StatusPending RunStatus = "pending"
 	StatusRunning RunStatus = "running"
+	StatusWaiting RunStatus = "waiting"
 	StatusDone    RunStatus = "done"
 	StatusFailed  RunStatus = "failed"
 )
@@ -86,6 +87,7 @@ type Run struct {
 	Image            string    `json:"image"`
 	ContainerID      string    `json:"container_id,omitempty"`
 	Status           RunStatus `json:"status"`
+	Interactive      bool      `json:"interactive,omitempty"`
 	PID              int       `json:"pid,omitempty"`
 	LogFile          string    `json:"log_file,omitempty"`
 	ExitCode         int       `json:"exit_code,omitempty"`
@@ -121,6 +123,12 @@ func StatePath(repoRoot, name string) string {
 // LogPath returns the log file path for a session (single run, no index).
 func LogPath(repoRoot, sessionName string) string {
 	return filepath.Join(sessionDir(repoRoot, sessionName), "logs", "solve.log")
+}
+
+// PiSessionDir returns the host path where pi session state is persisted for a session.
+// This directory is mounted into the container so conversation history survives container restarts.
+func PiSessionDir(repoRoot, sessionName string) string {
+	return filepath.Join(sessionDir(repoRoot, sessionName), "pi-sessions")
 }
 
 // ListSessions returns the names of all sessions that have a state file in the repo.
