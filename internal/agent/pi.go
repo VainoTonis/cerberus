@@ -7,7 +7,15 @@ type Pi struct{}
 func (Pi) Name() string { return "pi" }
 
 func (Pi) Args(r RunArgs) ([]string, error) {
-	args := []string{"pi", "--mode", "json", "--no-session"}
+	args := []string{"pi", "--mode", "json"}
+	if r.Interactive {
+		args = append(args, "--session-dir", "/tmp/pi-sessions")
+		if r.ContinueSession {
+			args = append(args, "--continue")
+		}
+	} else {
+		args = append(args, "--no-session")
+	}
 	if r.Model != "" {
 		args = append(args, "--model", r.Model)
 	}

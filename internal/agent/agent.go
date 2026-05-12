@@ -7,8 +7,10 @@ import (
 
 // RunArgs holds the parameters passed to an agent when launching it.
 type RunArgs struct {
-	Prompt string
-	Model  string
+	Prompt          string
+	Model           string
+	Interactive     bool // when true, use a persistent session dir instead of --no-session
+	ContinueSession bool // when true, resume the most recent session (--continue)
 }
 
 // Agent represents a coding agent that can be launched with a prompt and model.
