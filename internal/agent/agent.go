@@ -9,14 +9,11 @@ import (
 type RunArgs struct {
 	Prompt string
 	Model  string
-	// OcAgent is the opencode agent mode (e.g. "build", "plan").
-	// Only used by the OpenCode agent; ignored by others.
-	OcAgent string
 }
 
 // Agent represents a coding agent that can be launched with a prompt and model.
 type Agent interface {
-	// Name returns the agent identifier (e.g. "opencode").
+	// Name returns the agent identifier (e.g. "pi").
 	Name() string
 	// Args returns the argv slice to exec for this agent.
 	Args(r RunArgs) ([]string, error)
@@ -24,8 +21,7 @@ type Agent interface {
 
 // registry maps agent names to their Agent implementations.
 var registry = map[string]Agent{
-	"opencode": OpenCode{},
-	"pi":       Pi{},
+	"pi": Pi{},
 }
 
 // Get returns the Agent for the given name, or an error if unknown.

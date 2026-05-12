@@ -16,7 +16,7 @@ func buildAssistedBy(workerModel string) string {
 	return ""
 }
 
-// AskForCommitMessage runs opencode in worktreePath to generate a commit
+// AskForCommitMessage runs pi in worktreePath to generate a commit
 // message for the given diff. It returns a single subject line (≤72 chars).
 // On any failure it returns a safe fallback message rather than an error,
 // so callers can always proceed with a commit.
@@ -37,7 +37,7 @@ func AskForCommitMessage(worktreePath, diff, model string) string {
 		diff,
 	)
 
-	args := []string{"opencode", "run", "--format", "json", prompt}
+	args := []string{"pi", "--mode", "json", "--no-session", prompt}
 	cmd := exec.Command(args[0], args[1:]...)
 	cmd.Dir = worktreePath
 
@@ -57,16 +57,19 @@ func AskForCommitMessage(worktreePath, diff, model string) string {
 		scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
 		for scanner.Scan() {
 			var event struct {
-				Type string `json:"type"`
-				Part struct {
-					Text string `json:"text"`
-				} `json:"part"`
+				Type                  string `json:"type"`
+				AssistantMessageEvent struct {
+					Type  string `json:"type"`
+					Delta string `json:"delta"`
+				} `json:"assistantMessageEvent"`
 			}
 			if err := json.Unmarshal(scanner.Bytes(), &event); err != nil {
 				continue
 			}
-			if event.Type == "text" && event.Part.Text != "" {
-				collected.WriteString(event.Part.Text)
+			if event.Type == "message_update" &&
+				event.AssistantMessageEvent.Type == "text_delta" &&
+				event.AssistantMessageEvent.Delta != "" {
+				collected.WriteString(event.AssistantMessageEvent.Delta)
 			}
 		}
 	}()

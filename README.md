@@ -13,7 +13,7 @@ cerberus start -prompt "add input validation to the signup handler"
 ```
 
 1. Creates N git worktrees from the current HEAD, one per configured runner
-2. Runs `opencode run <prompt>` in each worktree in parallel
+2. Runs `pi --mode json <prompt>` in each worktree in parallel
 3. Streams output live, prefixed with `[solve-N]`, and writes logs to `.cerberus/logs/`
 4. Blocks until all agents finish
 
@@ -24,7 +24,7 @@ cerberus review -diff  # see full unified diffs
 cerberus apply -solution 2   # copy solve-2's changes into your working tree
 git diff                     # review, then commit as usual
 
-cerberus clean               # remove worktrees, branches, and opencode sessions
+cerberus clean               # remove worktrees, branches, and pi sessions
 ```
 
 ## Install
@@ -46,14 +46,12 @@ Requires Go 1.24+, git, and at least one supported agent CLI on your PATH.
 {
   "runners": [
     {
-      "agent": "opencode",
-      "model": "amazon-bedrock/anthropic.claude-haiku-4-5-20251001-v1:0",
-      "oc_agent": "build"
+      "agent": "pi",
+      "model": "amazon-bedrock/anthropic.claude-haiku-4-5-20251001-v1:0"
     },
     {
-      "agent": "opencode",
-      "model": "amazon-bedrock/qwen.qwen3-coder-30b-a3b-v1:0",
-      "oc_agent": "build"
+      "agent": "pi",
+      "model": "amazon-bedrock/qwen.qwen3-coder-30b-a3b-v1:0"
     }
   ],
   "instructions": "Focus only on the task described. Make the minimal changes required. Do not explore the codebase beyond what is directly needed to complete the task."
@@ -63,9 +61,8 @@ Requires Go 1.24+, git, and at least one supported agent CLI on your PATH.
 | Field | Description |
 |---|---|
 | `runners` | Ordered list of agent+model pairs. One solution slot per entry. |
-| `runners[].agent` | Agent CLI to use: `opencode`. |
+| `runners[].agent` | Agent CLI to use: `pi`. |
 | `runners[].model` | Model in `provider/model` format. Uses the agent's default if omitted. |
-| `runners[].oc_agent` | opencode agent mode (e.g. `build`, `plan`). Uses opencode's default if omitted. |
 | `instructions` | Prepended to every prompt. Use this to constrain agent behaviour. |
 
 ## Commands
@@ -80,7 +77,7 @@ cerberus start [flags]
   -prompt string       prompt to send to each agent (required)
   -prompt-file string  read prompt from a file instead of -prompt
   -n int               number of solutions (default: number of runners in config)
-  -agent string        agent to use when runners not set in config (default: opencode)
+  -agent string        agent to use when runners not set in config (default: pi)
   -model string        model to use when runners not set in config
 ```
 
@@ -120,7 +117,7 @@ cerberus merge -model provider/model   # use a specific model for the merge step
 
 ### `clean`
 
-Remove all worktrees, their branches, the opencode sessions, and the `.cerberus` state directory.
+Remove all worktrees, their branches, the pi sessions, and the `.cerberus` state directory.
 
 ```
 cerberus clean          # prompts for confirmation
@@ -137,7 +134,7 @@ Logs for each solution are written to `.cerberus/logs/solve-N.log`.
 
 | Agent | CLI | Non-interactive flag |
 |---|---|---|
-| `opencode` | `opencode run --format json` | Native |
+| `pi` | `pi --mode json --no-session` | Native |
 
 Adding a new agent means implementing the `Agent` interface in `internal/agent/`:
 

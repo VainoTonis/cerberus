@@ -60,7 +60,6 @@ type Run struct {
 	Worktree         string    `json:"worktree"`
 	Agent            string    `json:"agent"`
 	Model            string    `json:"model"`
-	OcAgent          string    `json:"oc_agent,omitempty"`
 	Image            string    `json:"image"`
 	ContainerID      string    `json:"container_id,omitempty"`
 	Status           RunStatus `json:"status"`
@@ -177,7 +176,6 @@ type StatsRecord struct {
 	PromptSnippet    string    `json:"prompt_snippet"`
 	BaseBranch       string    `json:"base_branch"`
 	Model            string    `json:"model"`
-	OcAgent          string    `json:"oc_agent,omitempty"`
 	Image            string    `json:"image"`
 	Status           string    `json:"status"`
 	DurationS        float64   `json:"duration_s,omitempty"`

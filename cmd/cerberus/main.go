@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math/rand"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -62,7 +63,7 @@ func cmdStartCommand() *cobra.Command {
 	cmd.Flags().StringVar(&name, "name", "", "session name (auto-generated if empty)")
 	cmd.Flags().StringVar(&prompt, "prompt", "", "prompt to send to agent (required)")
 	cmd.Flags().StringVar(&promptFile, "prompt-file", "", "read prompt from file instead of -prompt")
-	cmd.Flags().StringVar(&agentFlag, "agent", "opencode", "agent to use (default: opencode)")
+	cmd.Flags().StringVar(&agentFlag, "agent", "pi", "agent to use (default: pi)")
 	cmd.Flags().StringVar(&modelFlag, "model", "", "model to use (default from config or agent)")
 	cmd.Flags().StringVar(&imageFlag, "image", "", "docker image (default from config)")
 
@@ -236,7 +237,7 @@ func resolveSession(repoRoot, name string) (string, error) {
 func generateSessionName() string {
 	adjectives := []string{"swift", "clever", "bold", "keen", "wise", "quick", "sharp", "bright", "strong", "brave"}
 	nouns := []string{"hawk", "fox", "wolf", "eagle", "lion", "tiger", "bear", "raven", "otter", "lynx"}
-	return adjectives[len(adjectives)%len(os.Args)] + "-" + nouns[(len(adjectives)+len(os.Args))%len(nouns)]
+	return adjectives[rand.Intn(len(adjectives))] + "-" + nouns[rand.Intn(len(nouns))]
 }
 
 // createWorktreePath creates a worktree at a specific path with a given branch.
@@ -349,7 +350,6 @@ func cmdStart(sessionName, prompt, promptFile, agentFlag, modelFlag, imageFlag s
 			Worktree:  wtPath,
 			Agent:     agentFlag,
 			Model:     model,
-			OcAgent:   "", // Not set for start
 			Image:     image,
 			Status:    config.StatusPending,
 			LogFile:   logPath,
@@ -440,11 +440,10 @@ func runAgentInDocker(repoRoot string, state *config.State, prompt string, agent
 	wtPath := state.Run.Worktree
 	logPath := state.Run.LogFile
 
-	// Get opencode args
+	// Get agent args
 	cmdArgs, err := agentImpl.Args(agent.RunArgs{
-		Prompt:  prompt,
-		Model:   model,
-		OcAgent: state.Run.OcAgent,
+		Prompt: prompt,
+		Model:  model,
 	})
 	if err != nil {
 		return 1, fmt.Errorf("build command: %w", err)
@@ -739,11 +738,10 @@ func runAgentInDockerRerun(repoRoot string, state *config.State, prompt string, 
 	sessionName := state.Name
 	wtPath := state.Run.Worktree
 
-	// Get opencode args
+	// Get agent args
 	cmdArgs, err := agentImpl.Args(agent.RunArgs{
-		Prompt:  prompt,
-		Model:   state.Run.Model,
-		OcAgent: state.Run.OcAgent,
+		Prompt: prompt,
+		Model:  state.Run.Model,
 	})
 	if err != nil {
 		return 1, fmt.Errorf("build command: %w", err)
@@ -1138,9 +1136,6 @@ func cmdStats() error {
 		if modelAgent == "" {
 			modelAgent = "(default)"
 		}
-		if rec.OcAgent != "" {
-			modelAgent = modelAgent + "/" + rec.OcAgent
-		}
 		modelAgent = truncate(modelAgent, 15)
 
 		durationStr := "-"
@@ -1175,7 +1170,6 @@ func appendStats(state *config.State) error {
 		PromptSnippet:    truncate(state.Prompt, 80),
 		BaseBranch:       state.BaseBranch,
 		Model:            r.Model,
-		OcAgent:          r.OcAgent,
 		Image:            r.Image,
 		Status:           string(r.Status),
 		DurationS:        duration,
