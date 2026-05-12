@@ -1,0 +1,9 @@
+{
+  "instructions": "",
+  "default_model": "",
+  "default_image": "",
+  "aws_profile": "",
+  "aws_region": "",
+  "max_turns": 30,
+  "max_output_tokens": 10000
+}
