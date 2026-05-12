@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math/rand"
@@ -150,17 +151,25 @@ func cmdReviewCommand() *cobra.Command {
 
 func cmdCleanCommand() *cobra.Command {
 	var name string
+	var all bool
 
 	cmd := &cobra.Command{
 		Use:   "clean",
 		Short: "Remove a session's worktree, branch, and state",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return cmdClean(name)
+			repoRoot, err := resolveRepoRoot()
+			if err != nil {
+				return err
+			}
+			if all {
+				return cmdCleanAll(repoRoot)
+			}
+			return cmdClean(repoRoot, name)
 		},
 	}
 
 	cmd.Flags().StringVar(&name, "name", "", "session name (required if multiple sessions exist)")
-
+	cmd.Flags().BoolVar(&all, "all", false, "clean all sessions")
 	cmd.RegisterFlagCompletionFunc("name", completionSessions)
 
 	return cmd
@@ -1046,12 +1055,28 @@ func cmdReview(name string, diffFlag bool) error {
 }
 
 // cmdClean removes a session's worktree, branch, and state.
-func cmdClean(name string) error {
-	repoRoot, err := resolveRepoRoot()
+func cmdCleanAll(repoRoot string) error {
+	sessions, err := config.ListSessions(repoRoot)
 	if err != nil {
 		return err
 	}
 
+	if len(sessions) == 0 {
+		fmt.Println("no sessions to clean")
+		return nil
+	}
+
+	var errs []error
+	for _, s := range sessions {
+		if err := cmdClean(repoRoot, s); err != nil {
+			errs = append(errs, fmt.Errorf("session %q: %w", s, err))
+		}
+	}
+
+	return errors.Join(errs...)
+}
+
+func cmdClean(repoRoot, name string) error {
 	sessionName, err := resolveSession(repoRoot, name)
 	if err != nil {
 		return err
