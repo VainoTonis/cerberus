@@ -22,6 +22,7 @@ type RunArgs struct {
 	Workdir  string    // Working directory in container (-w)
 	Mounts   []Mount   // Volume mounts
 	Cmd      []string  // Command to run in container
+	Env      []string  // Environment variables (KEY=VALUE)
 	EnvFile  string    // Path to env file (--env-file), empty if unused
 	Networks []string  // Networks to attach (--network)
 	Stdout   io.Writer // Stdout destination
@@ -66,6 +67,11 @@ func Run(ctx context.Context, args RunArgs) (containerID string, exitCode int, e
 	// Add env file if provided.
 	if args.EnvFile != "" {
 		cmd.Args = append(cmd.Args, "--env-file", args.EnvFile)
+	}
+
+	// Add individual env vars.
+	for _, e := range args.Env {
+		cmd.Args = append(cmd.Args, "-e", e)
 	}
 
 	// Add networks.

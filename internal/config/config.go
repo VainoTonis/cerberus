@@ -20,6 +20,8 @@ type UserConfig struct {
 	Instructions string `json:"instructions"`
 	DefaultModel string `json:"default_model,omitempty"`
 	DefaultImage string `json:"default_image,omitempty"`
+	AWSProfile   string `json:"aws_profile,omitempty"`
+	AWSRegion    string `json:"aws_region,omitempty"`
 }
 
 // LoadUserConfig reads ~/.config/cerberus/config.json.

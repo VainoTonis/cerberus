@@ -366,7 +366,7 @@ func cmdStart(sessionName, prompt, promptFile, agentFlag, modelFlag, imageFlag s
 	fmt.Printf("agent:   %s\n\n", agentFlag)
 
 	// Run agent in docker
-	exitCode, err := runAgentInDocker(repoRoot, state, resolvedPrompt, agentImpl, model)
+	exitCode, err := runAgentInDocker(repoRoot, state, resolvedPrompt, agentImpl, model, userCfg)
 	if err != nil {
 		return err
 	}
@@ -376,10 +376,10 @@ func cmdStart(sessionName, prompt, promptFile, agentFlag, modelFlag, imageFlag s
 		state.Run.ExitCode = exitCode
 		state.Run.FinishedAt = time.Now()
 		if err := config.Save(repoRoot, state); err != nil {
-			fmt.Fprintf(os.Stderr, "save state: %w\n", err)
+			fmt.Fprintf(os.Stderr, "save state: %v\n", err)
 		}
 		if err := appendStats(state); err != nil {
-			fmt.Fprintf(os.Stderr, "append stats: %w\n", err)
+			fmt.Fprintf(os.Stderr, "append stats: %v\n", err)
 		}
 		return fmt.Errorf("agent exited with code %d", exitCode)
 	}
@@ -397,7 +397,7 @@ func cmdStart(sessionName, prompt, promptFile, agentFlag, modelFlag, imageFlag s
 			return fmt.Errorf("save state: %w", err)
 		}
 		if err := appendStats(state); err != nil {
-			fmt.Fprintf(os.Stderr, "warning: append stats: %w\n", err)
+			fmt.Fprintf(os.Stderr, "warning: append stats: %v\n", err)
 		}
 		fmt.Printf("[%s] no changes to commit\n", sessionName)
 		printJSONSummary(state)
@@ -426,7 +426,7 @@ func cmdStart(sessionName, prompt, promptFile, agentFlag, modelFlag, imageFlag s
 	}
 
 	if err := appendStats(state); err != nil {
-		fmt.Fprintf(os.Stderr, "warning: append stats: %w\n", err)
+		fmt.Fprintf(os.Stderr, "warning: append stats: %v\n", err)
 	}
 
 	fmt.Printf("[%s] commit %s  %s\n", sessionName, commitHash[:8], commitMsg)
@@ -435,7 +435,7 @@ func cmdStart(sessionName, prompt, promptFile, agentFlag, modelFlag, imageFlag s
 }
 
 // runAgentInDocker executes the agent in a docker container and streams output.
-func runAgentInDocker(repoRoot string, state *config.State, prompt string, agentImpl agent.Agent, model string) (int, error) {
+func runAgentInDocker(repoRoot string, state *config.State, prompt string, agentImpl agent.Agent, model string, userCfg config.UserConfig) (int, error) {
 	sessionName := state.Name
 	wtPath := state.Run.Worktree
 	logPath := state.Run.LogFile
@@ -470,8 +470,8 @@ func runAgentInDocker(repoRoot string, state *config.State, prompt string, agent
 			ReadOnly:  false,
 		},
 		{
-			Host:      filepath.Join(homeDir, ".config", "opencode"),
-			Container: "/root/.config/opencode",
+			Host:      filepath.Join(homeDir, ".pi", "agent"),
+			Container: "/root/.pi/agent",
 			ReadOnly:  true,
 		},
 	}
@@ -486,18 +486,30 @@ func runAgentInDocker(repoRoot string, state *config.State, prompt string, agent
 		})
 	}
 
-	// Determine networks
-	var networks []string
-	if networkExists("sandbox-internal") {
-		networks = append(networks, "sandbox-internal")
+	// Add ~/.aws if it exists (needed for AWS provider credentials)
+	awsDir := filepath.Join(homeDir, ".aws")
+	if _, err := os.Stat(awsDir); err == nil {
+		mounts = append(mounts, docker.Mount{
+			Host:      awsDir,
+			Container: "/root/.aws",
+			ReadOnly:  true,
+		})
 	}
 
+	// Determine networks
+	// TODO: re-enable sandbox network restriction once agent auth is working
+	var networks []string
+	// if networkExists("sandbox-internal") {
+	// 	networks = append(networks, "sandbox-internal")
+	// }
+
 	// Resolve env file if it exists
+	// TODO: re-enable proxy env file once sandbox network is in use
 	envFile := ""
-	envFilePath := filepath.Join(repoRoot, "proxy", "agent.env")
-	if _, err := os.Stat(envFilePath); err == nil {
-		envFile = envFilePath
-	}
+	// envFilePath := filepath.Join(repoRoot, "proxy", "agent.env")
+	// if _, err := os.Stat(envFilePath); err == nil {
+	// 	envFile = envFilePath
+	// }
 
 	// Create output file for JSON lines
 	pipeR, pipeW := io.Pipe()
@@ -519,46 +531,28 @@ func runAgentInDocker(repoRoot string, state *config.State, prompt string, agent
 			line := scanner.Text()
 			fmt.Fprintln(logFile, line)
 
-			// Parse JSON event
+			// Parse JSON event (pi --mode json format)
 			var event struct {
-				SessionID string `json:"sessionID"`
-				Type      string `json:"type"`
-				Part      struct {
-					Text   string `json:"text"`
-					Tokens struct {
-						Input  int `json:"input"`
-						Output int `json:"output"`
-						Cache  struct {
-							Read  int `json:"read"`
-							Write int `json:"write"`
-						} `json:"cache"`
-					} `json:"tokens"`
-					Cost float64 `json:"cost"`
-				} `json:"part"`
-				Message string `json:"message"`
+				Type                  string `json:"type"`
+				ID                    string `json:"id"` // session event
+				AssistantMessageEvent struct {
+					Type  string `json:"type"`
+					Delta string `json:"delta"`
+				} `json:"assistantMessageEvent"`
 			}
 
 			if err := json.Unmarshal([]byte(line), &event); err == nil {
-				// Extract sessionID on first event
-				if event.SessionID != "" && state.Run.SessionID == "" {
-					state.Run.SessionID = event.SessionID
+				// Extract session ID from the session header event
+				if event.Type == "session" && event.ID != "" && state.Run.SessionID == "" {
+					state.Run.SessionID = event.ID
 					config.Save(repoRoot, state)
 				}
 
-				// Accumulate tokens
-				if event.Type == "step_finish" {
-					accumulatedTokens.input += event.Part.Tokens.Input
-					accumulatedTokens.output += event.Part.Tokens.Output
-					accumulatedTokens.cacheRead += event.Part.Tokens.Cache.Read
-					accumulatedTokens.cacheWrite += event.Part.Tokens.Cache.Write
-					accumulatedCost.costUSD += event.Part.Cost
-				}
-
-				// Print text to stdout
-				if event.Type == "text" && event.Part.Text != "" {
-					fmt.Printf("[%s] %s", sessionName, event.Part.Text)
-				} else if event.Message != "" {
-					fmt.Printf("[%s] %s\n", sessionName, event.Message)
+				// Stream text deltas to stdout
+				if event.Type == "message_update" &&
+					event.AssistantMessageEvent.Type == "text_delta" &&
+					event.AssistantMessageEvent.Delta != "" {
+					fmt.Printf("[%s] %s", sessionName, event.AssistantMessageEvent.Delta)
 				}
 			} else {
 				// Not JSON, print as-is
@@ -568,11 +562,32 @@ func runAgentInDocker(repoRoot string, state *config.State, prompt string, agent
 	}()
 
 	// Run docker
+	// Forward AWS env vars for bedrock auth, and redirect pi sessions to writable temp dir.
+	// Prefer host env vars; fall back to userCfg values.
+	awsEnv := map[string]string{
+		"AWS_PROFILE":           userCfg.AWSProfile,
+		"AWS_REGION":            userCfg.AWSRegion,
+		"AWS_DEFAULT_REGION":    userCfg.AWSRegion,
+		"AWS_ACCESS_KEY_ID":     "",
+		"AWS_SECRET_ACCESS_KEY": "",
+		"AWS_SESSION_TOKEN":     "",
+	}
+	var envVars []string
+	for key, cfgVal := range awsEnv {
+		if val := os.Getenv(key); val != "" {
+			envVars = append(envVars, key+"="+val)
+		} else if cfgVal != "" {
+			envVars = append(envVars, key+"="+cfgVal)
+		}
+	}
+	envVars = append(envVars, "PI_CODING_AGENT_SESSION_DIR=/tmp/pi-sessions")
+
 	runArgs := docker.RunArgs{
 		Image:    state.Run.Image,
 		Workdir:  "/workspace",
 		Mounts:   mounts,
 		Cmd:      cmdArgs,
+		Env:      envVars,
 		EnvFile:  envFile,
 		Networks: networks,
 		Stdout:   pipeW,
@@ -675,7 +690,7 @@ func cmdRerun(name, prompt, promptFile string) error {
 		state.Run.FinishedAt = time.Now()
 		config.Save(repoRoot, state)
 		if err := appendStats(state); err != nil {
-			fmt.Fprintf(os.Stderr, "warning: append stats: %w\n", err)
+			fmt.Fprintf(os.Stderr, "warning: append stats: %v\n", err)
 		}
 		return fmt.Errorf("agent exited with code %d", exitCode)
 	}
@@ -691,7 +706,7 @@ func cmdRerun(name, prompt, promptFile string) error {
 		state.Run.FinishedAt = time.Now()
 		config.Save(repoRoot, state)
 		if err := appendStats(state); err != nil {
-			fmt.Fprintf(os.Stderr, "warning: append stats: %w\n", err)
+			fmt.Fprintf(os.Stderr, "warning: append stats: %v\n", err)
 		}
 		fmt.Printf("[%s] no changes to commit\n", sessionName)
 		return nil
@@ -712,7 +727,7 @@ func cmdRerun(name, prompt, promptFile string) error {
 	state.Run.FinishedAt = time.Now()
 	config.Save(repoRoot, state)
 	if err := appendStats(state); err != nil {
-		fmt.Fprintf(os.Stderr, "warning: append stats: %w\n", err)
+		fmt.Fprintf(os.Stderr, "warning: append stats: %v\n", err)
 	}
 
 	fmt.Printf("[%s] commit %s  %s\n", sessionName, commitHash[:8], commitMsg)
@@ -747,8 +762,8 @@ func runAgentInDockerRerun(repoRoot string, state *config.State, prompt string, 
 			ReadOnly:  false,
 		},
 		{
-			Host:      filepath.Join(homeDir, ".config", "opencode"),
-			Container: "/root/.config/opencode",
+			Host:      filepath.Join(homeDir, ".pi", "agent"),
+			Container: "/root/.pi/agent",
 			ReadOnly:  true,
 		},
 	}
@@ -763,18 +778,30 @@ func runAgentInDockerRerun(repoRoot string, state *config.State, prompt string, 
 		})
 	}
 
-	// Determine networks
-	var networks []string
-	if networkExists("sandbox-internal") {
-		networks = append(networks, "sandbox-internal")
+	// Add ~/.aws if it exists (needed for AWS provider credentials)
+	awsDir := filepath.Join(homeDir, ".aws")
+	if _, err := os.Stat(awsDir); err == nil {
+		mounts = append(mounts, docker.Mount{
+			Host:      awsDir,
+			Container: "/root/.aws",
+			ReadOnly:  true,
+		})
 	}
 
+	// Determine networks
+	// TODO: re-enable sandbox network restriction once agent auth is working
+	var networks []string
+	// if networkExists("sandbox-internal") {
+	// 	networks = append(networks, "sandbox-internal")
+	// }
+
 	// Resolve env file
+	// TODO: re-enable proxy env file once sandbox network is in use
 	envFile := ""
-	envFilePath := filepath.Join(repoRoot, "proxy", "agent.env")
-	if _, err := os.Stat(envFilePath); err == nil {
-		envFile = envFilePath
-	}
+	// envFilePath := filepath.Join(repoRoot, "proxy", "agent.env")
+	// if _, err := os.Stat(envFilePath); err == nil {
+	// 	envFile = envFilePath
+	// }
 
 	// Create output pipe
 	pipeR, pipeW := io.Pipe()
@@ -796,36 +823,21 @@ func runAgentInDockerRerun(repoRoot string, state *config.State, prompt string, 
 			line := scanner.Text()
 			fmt.Fprintln(logFile, line)
 
+			// Parse JSON event (pi --mode json format)
 			var event struct {
-				Type string `json:"type"`
-				Part struct {
-					Text   string `json:"text"`
-					Tokens struct {
-						Input  int `json:"input"`
-						Output int `json:"output"`
-						Cache  struct {
-							Read  int `json:"read"`
-							Write int `json:"write"`
-						} `json:"cache"`
-					} `json:"tokens"`
-					Cost float64 `json:"cost"`
-				} `json:"part"`
-				Message string `json:"message"`
+				Type                  string `json:"type"`
+				AssistantMessageEvent struct {
+					Type  string `json:"type"`
+					Delta string `json:"delta"`
+				} `json:"assistantMessageEvent"`
 			}
 
 			if err := json.Unmarshal([]byte(line), &event); err == nil {
-				if event.Type == "step_finish" {
-					accumulatedTokens.input += event.Part.Tokens.Input
-					accumulatedTokens.output += event.Part.Tokens.Output
-					accumulatedTokens.cacheRead += event.Part.Tokens.Cache.Read
-					accumulatedTokens.cacheWrite += event.Part.Tokens.Cache.Write
-					accumulatedTokens.costUSD += event.Part.Cost
-				}
-
-				if event.Type == "text" && event.Part.Text != "" {
-					fmt.Printf("[%s] %s", sessionName, event.Part.Text)
-				} else if event.Message != "" {
-					fmt.Printf("[%s] %s\n", sessionName, event.Message)
+				// Stream text deltas to stdout
+				if event.Type == "message_update" &&
+					event.AssistantMessageEvent.Type == "text_delta" &&
+					event.AssistantMessageEvent.Delta != "" {
+					fmt.Printf("[%s] %s", sessionName, event.AssistantMessageEvent.Delta)
 				}
 			} else {
 				fmt.Printf("[%s] %s\n", sessionName, line)
@@ -834,11 +846,31 @@ func runAgentInDockerRerun(repoRoot string, state *config.State, prompt string, 
 	}()
 
 	// Run docker
+	rerunUserCfg, _ := config.LoadUserConfig()
+	awsEnvRerun := map[string]string{
+		"AWS_PROFILE":           rerunUserCfg.AWSProfile,
+		"AWS_REGION":            rerunUserCfg.AWSRegion,
+		"AWS_DEFAULT_REGION":    rerunUserCfg.AWSRegion,
+		"AWS_ACCESS_KEY_ID":     "",
+		"AWS_SECRET_ACCESS_KEY": "",
+		"AWS_SESSION_TOKEN":     "",
+	}
+	var envVarsRerun []string
+	for key, cfgVal := range awsEnvRerun {
+		if val := os.Getenv(key); val != "" {
+			envVarsRerun = append(envVarsRerun, key+"="+val)
+		} else if cfgVal != "" {
+			envVarsRerun = append(envVarsRerun, key+"="+cfgVal)
+		}
+	}
+	envVarsRerun = append(envVarsRerun, "PI_CODING_AGENT_SESSION_DIR=/tmp/pi-sessions")
+
 	runArgs := docker.RunArgs{
 		Image:    state.Run.Image,
 		Workdir:  "/workspace",
 		Mounts:   mounts,
 		Cmd:      cmdArgs,
+		Env:      envVarsRerun,
 		EnvFile:  envFile,
 		Networks: networks,
 		Stdout:   pipeW,
@@ -1035,7 +1067,7 @@ func cmdClean(name string) error {
 	// Stop running container if any
 	if state.Run.ContainerID != "" {
 		if err := docker.Stop(state.Run.ContainerID); err != nil {
-			fmt.Fprintf(os.Stderr, "warning: stop container: %w\n", err)
+			fmt.Fprintf(os.Stderr, "warning: stop container: %v\n", err)
 		}
 	}
 
@@ -1049,12 +1081,12 @@ func cmdClean(name string) error {
 	// Get path to the worktree for git worktree remove
 	// We'll build it directly: .cerberus/sessions/<name>/worktrees/solve
 	if err := removeWorktreeViaGit(repoRoot, wtPath, branchName); err != nil {
-		fmt.Fprintf(os.Stderr, "warning: remove worktree: %w\n", err)
+		fmt.Fprintf(os.Stderr, "warning: remove worktree: %v\n", err)
 	}
 
 	// Remove session directory
 	if err := config.Remove(repoRoot, sessionName); err != nil {
-		fmt.Fprintf(os.Stderr, "warning: remove session dir: %w\n", err)
+		fmt.Fprintf(os.Stderr, "warning: remove session dir: %v\n", err)
 	}
 
 	fmt.Printf("cleaned session %q\n", sessionName)

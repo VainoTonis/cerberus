@@ -25,6 +25,7 @@ type Agent interface {
 // registry maps agent names to their Agent implementations.
 var registry = map[string]Agent{
 	"opencode": OpenCode{},
+	"pi":       Pi{},
 }
 
 // Get returns the Agent for the given name, or an error if unknown.
