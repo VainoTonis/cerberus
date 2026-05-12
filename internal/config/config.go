@@ -15,13 +15,36 @@ const (
 	ConfigFile = "config.json"
 )
 
+const (
+	DefaultMaxTurns        = 30
+	DefaultMaxOutputTokens = 10000
+)
+
 // UserConfig holds user-level defaults loaded from ~/.config/cerberus/config.json.
 type UserConfig struct {
-	Instructions string `json:"instructions"`
-	DefaultModel string `json:"default_model,omitempty"`
-	DefaultImage string `json:"default_image,omitempty"`
-	AWSProfile   string `json:"aws_profile,omitempty"`
-	AWSRegion    string `json:"aws_region,omitempty"`
+	Instructions    string `json:"instructions"`
+	DefaultModel    string `json:"default_model,omitempty"`
+	DefaultImage    string `json:"default_image,omitempty"`
+	AWSProfile      string `json:"aws_profile,omitempty"`
+	AWSRegion       string `json:"aws_region,omitempty"`
+	MaxTurns        int    `json:"max_turns,omitempty"`
+	MaxOutputTokens int    `json:"max_output_tokens,omitempty"`
+}
+
+// EffectiveMaxTurns returns MaxTurns if set, otherwise the default.
+func (c UserConfig) EffectiveMaxTurns() int {
+	if c.MaxTurns > 0 {
+		return c.MaxTurns
+	}
+	return DefaultMaxTurns
+}
+
+// EffectiveMaxOutputTokens returns MaxOutputTokens if set, otherwise the default.
+func (c UserConfig) EffectiveMaxOutputTokens() int {
+	if c.MaxOutputTokens > 0 {
+		return c.MaxOutputTokens
+	}
+	return DefaultMaxOutputTokens
 }
 
 // LoadUserConfig reads ~/.config/cerberus/config.json.

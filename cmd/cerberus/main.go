@@ -480,7 +480,7 @@ func runAgentInDocker(repoRoot string, state *config.State, prompt string, agent
 		{
 			Host:      filepath.Join(homeDir, ".pi", "agent"),
 			Container: "/root/.pi/agent",
-			ReadOnly:  true,
+			ReadOnly:  false,
 		},
 	}
 
@@ -531,18 +531,33 @@ func runAgentInDocker(repoRoot string, state *config.State, prompt string, agent
 		costUSD    float64
 	}
 
+	ctx, cancelRun := context.WithCancel(context.Background())
+	defer cancelRun()
+
 	go func() {
 		defer pipeR.Close()
 		scanner := bufio.NewScanner(pipeR)
 		scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
+		turns := 0
 		for scanner.Scan() {
 			line := scanner.Text()
 			fmt.Fprintln(logFile, line)
 
 			// Parse JSON event (pi --mode json format)
 			var event struct {
-				Type                  string `json:"type"`
-				ID                    string `json:"id"` // session event
+				Type    string `json:"type"`
+				ID      string `json:"id"` // session event
+				Message struct {
+					Usage struct {
+						Input      int `json:"input"`
+						Output     int `json:"output"`
+						CacheRead  int `json:"cacheRead"`
+						CacheWrite int `json:"cacheWrite"`
+						Cost       struct {
+							Total float64 `json:"total"`
+						} `json:"cost"`
+					} `json:"usage"`
+				} `json:"message"`
 				AssistantMessageEvent struct {
 					Type  string `json:"type"`
 					Delta string `json:"delta"`
@@ -554,6 +569,25 @@ func runAgentInDocker(repoRoot string, state *config.State, prompt string, agent
 				if event.Type == "session" && event.ID != "" && state.Run.SessionID == "" {
 					state.Run.SessionID = event.ID
 					config.Save(repoRoot, state)
+				}
+
+				// Accumulate token usage from message_end events
+				if event.Type == "message_end" {
+					accumulatedTokens.input += event.Message.Usage.Input
+					accumulatedTokens.output += event.Message.Usage.Output
+					accumulatedTokens.cacheRead += event.Message.Usage.CacheRead
+					accumulatedTokens.cacheWrite += event.Message.Usage.CacheWrite
+					accumulatedCost.costUSD += event.Message.Usage.Cost.Total
+					turns++
+
+					if turns >= userCfg.EffectiveMaxTurns() {
+						fmt.Printf("[%s] turn limit reached (%d turns), killing agent\n", sessionName, turns)
+						cancelRun()
+					}
+					if accumulatedTokens.output >= userCfg.EffectiveMaxOutputTokens() {
+						fmt.Printf("[%s] output token limit reached (%d tokens), killing agent\n", sessionName, accumulatedTokens.output)
+						cancelRun()
+					}
 				}
 
 				// Stream text deltas to stdout
@@ -602,7 +636,6 @@ func runAgentInDocker(repoRoot string, state *config.State, prompt string, agent
 		Stderr:   pipeW,
 	}
 
-	ctx := context.Background()
 	containerID, exitCode, err := docker.Run(ctx, runArgs)
 	pipeW.Close()
 
@@ -771,7 +804,7 @@ func runAgentInDockerRerun(repoRoot string, state *config.State, prompt string, 
 		{
 			Host:      filepath.Join(homeDir, ".pi", "agent"),
 			Container: "/root/.pi/agent",
-			ReadOnly:  true,
+			ReadOnly:  false,
 		},
 	}
 
@@ -810,6 +843,9 @@ func runAgentInDockerRerun(repoRoot string, state *config.State, prompt string, 
 	// 	envFile = envFilePath
 	// }
 
+	// Run docker
+	rerunUserCfg, _ := config.LoadUserConfig()
+
 	// Create output pipe
 	pipeR, pipeW := io.Pipe()
 
@@ -822,17 +858,32 @@ func runAgentInDockerRerun(repoRoot string, state *config.State, prompt string, 
 		costUSD    float64
 	}
 
+	rerunCtx, cancelRerun := context.WithCancel(context.Background())
+	defer cancelRerun()
+
 	go func() {
 		defer pipeR.Close()
 		scanner := bufio.NewScanner(pipeR)
 		scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
+		turns := 0
 		for scanner.Scan() {
 			line := scanner.Text()
 			fmt.Fprintln(logFile, line)
 
 			// Parse JSON event (pi --mode json format)
 			var event struct {
-				Type                  string `json:"type"`
+				Type    string `json:"type"`
+				Message struct {
+					Usage struct {
+						Input      int `json:"input"`
+						Output     int `json:"output"`
+						CacheRead  int `json:"cacheRead"`
+						CacheWrite int `json:"cacheWrite"`
+						Cost       struct {
+							Total float64 `json:"total"`
+						} `json:"cost"`
+					} `json:"usage"`
+				} `json:"message"`
 				AssistantMessageEvent struct {
 					Type  string `json:"type"`
 					Delta string `json:"delta"`
@@ -840,6 +891,25 @@ func runAgentInDockerRerun(repoRoot string, state *config.State, prompt string, 
 			}
 
 			if err := json.Unmarshal([]byte(line), &event); err == nil {
+				// Accumulate token usage from message_end events
+				if event.Type == "message_end" {
+					accumulatedTokens.input += event.Message.Usage.Input
+					accumulatedTokens.output += event.Message.Usage.Output
+					accumulatedTokens.cacheRead += event.Message.Usage.CacheRead
+					accumulatedTokens.cacheWrite += event.Message.Usage.CacheWrite
+					accumulatedTokens.costUSD += event.Message.Usage.Cost.Total
+					turns++
+
+					if turns >= rerunUserCfg.EffectiveMaxTurns() {
+						fmt.Printf("[%s] turn limit reached (%d turns), killing agent\n", sessionName, turns)
+						cancelRerun()
+					}
+					if accumulatedTokens.output >= rerunUserCfg.EffectiveMaxOutputTokens() {
+						fmt.Printf("[%s] output token limit reached (%d tokens), killing agent\n", sessionName, accumulatedTokens.output)
+						cancelRerun()
+					}
+				}
+
 				// Stream text deltas to stdout
 				if event.Type == "message_update" &&
 					event.AssistantMessageEvent.Type == "text_delta" &&
@@ -852,8 +922,6 @@ func runAgentInDockerRerun(repoRoot string, state *config.State, prompt string, 
 		}
 	}()
 
-	// Run docker
-	rerunUserCfg, _ := config.LoadUserConfig()
 	awsEnvRerun := map[string]string{
 		"AWS_PROFILE":           rerunUserCfg.AWSProfile,
 		"AWS_REGION":            rerunUserCfg.AWSRegion,
@@ -884,8 +952,7 @@ func runAgentInDockerRerun(repoRoot string, state *config.State, prompt string, 
 		Stderr:   pipeW,
 	}
 
-	ctx := context.Background()
-	containerID, exitCode, err := docker.Run(ctx, runArgs)
+	containerID, exitCode, err := docker.Run(rerunCtx, runArgs)
 	pipeW.Close()
 
 	if containerID != "" {
