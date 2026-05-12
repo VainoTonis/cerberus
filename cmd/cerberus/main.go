@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -37,6 +38,9 @@ func main() {
 	rootCmd.AddCommand(
 		cmdStartCommand(),
 		cmdRerunCommand(),
+		cmdChatCommand(),
+		cmdMessageCommand(),
+		cmdCloseCommand(),
 		cmdStatusCommand(),
 		cmdLogsCommand(),
 		cmdReviewCommand(),
@@ -1294,4 +1298,513 @@ func truncate(s string, max int) string {
 		return s
 	}
 	return s[:max-3] + "..."
+}
+
+// buildInteractiveEnvVars returns the env vars to pass to docker exec for interactive turns.
+func buildInteractiveEnvVars(userCfg config.UserConfig) []string {
+	awsEnv := map[string]string{
+		"AWS_PROFILE":           userCfg.AWSProfile,
+		"AWS_REGION":            userCfg.AWSRegion,
+		"AWS_DEFAULT_REGION":    userCfg.AWSRegion,
+		"AWS_ACCESS_KEY_ID":     "",
+		"AWS_SECRET_ACCESS_KEY": "",
+		"AWS_SESSION_TOKEN":     "",
+	}
+	var envVars []string
+	for key, cfgVal := range awsEnv {
+		if val := os.Getenv(key); val != "" {
+			envVars = append(envVars, key+"="+val)
+		} else if cfgVal != "" {
+			envVars = append(envVars, key+"="+cfgVal)
+		}
+	}
+	// The pi session dir is mounted at /tmp/pi-sessions in the container via the volume mount.
+	envVars = append(envVars, "PI_CODING_AGENT_SESSION_DIR=/tmp/pi-sessions")
+	return envVars
+}
+
+// runTurnViaExec runs a single agent turn inside an already-running container via docker exec.
+// It streams output to stdout, accumulates token usage into state, and saves state on completion.
+// On success the pi session ID is captured and written to state for use in subsequent turns.
+func runTurnViaExec(repoRoot string, state *config.State, prompt string, userCfg config.UserConfig) (int, error) {
+	sessionName := state.Name
+
+	agentImpl, err := agent.Get(state.Run.Agent)
+	if err != nil {
+		return 1, err
+	}
+
+	cmdArgs, err := agentImpl.Args(agent.RunArgs{
+		Prompt:          prompt,
+		Model:           state.Run.Model,
+		Interactive:     true,
+		ContinueSession: state.Run.SessionID != "",
+	})
+	if err != nil {
+		return 1, fmt.Errorf("build command: %w", err)
+	}
+
+	logFile, err := os.OpenFile(state.Run.LogFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return 1, fmt.Errorf("open log file: %w", err)
+	}
+	defer logFile.Close()
+
+	fmt.Fprintf(logFile, "\n--- turn: %s ---\n", time.Now().Format(time.RFC3339))
+
+	envVars := buildInteractiveEnvVars(userCfg)
+
+	pipeR, pipeW := io.Pipe()
+
+	var (
+		inputTokens      int
+		outputTokens     int
+		cacheReadTokens  int
+		cacheWriteTokens int
+		costUSD          float64
+	)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		defer pipeR.Close()
+
+		scanner := bufio.NewScanner(pipeR)
+		scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
+		turns := 0
+		atLineStart := true
+
+		for scanner.Scan() {
+			line := scanner.Text()
+			fmt.Fprintln(logFile, line)
+
+			var event struct {
+				Type    string `json:"type"`
+				ID      string `json:"id"`
+				Message struct {
+					Usage struct {
+						Input      int `json:"input"`
+						Output     int `json:"output"`
+						CacheRead  int `json:"cacheRead"`
+						CacheWrite int `json:"cacheWrite"`
+						Cost       struct {
+							Total float64 `json:"total"`
+						} `json:"cost"`
+					} `json:"usage"`
+				} `json:"message"`
+				AssistantMessageEvent struct {
+					Type  string `json:"type"`
+					Delta string `json:"delta"`
+				} `json:"assistantMessageEvent"`
+			}
+
+			if err := json.Unmarshal([]byte(line), &event); err == nil {
+				if event.Type == "session" && event.ID != "" && state.Run.SessionID == "" {
+					state.Run.SessionID = event.ID
+					config.Save(repoRoot, state)
+				}
+
+				if event.Type == "message_end" {
+					inputTokens += event.Message.Usage.Input
+					outputTokens += event.Message.Usage.Output
+					cacheReadTokens += event.Message.Usage.CacheRead
+					cacheWriteTokens += event.Message.Usage.CacheWrite
+					costUSD += event.Message.Usage.Cost.Total
+					turns++
+
+					if turns >= userCfg.EffectiveMaxTurns() {
+						fmt.Printf("[%s] turn limit reached (%d turns), killing agent\n", sessionName, turns)
+						cancel()
+					}
+					if outputTokens >= userCfg.EffectiveMaxOutputTokens() {
+						fmt.Printf("[%s] output token limit reached (%d tokens), killing agent\n", sessionName, outputTokens)
+						cancel()
+					}
+				}
+
+				if event.Type == "message_update" &&
+					event.AssistantMessageEvent.Type == "text_delta" &&
+					event.AssistantMessageEvent.Delta != "" {
+					delta := event.AssistantMessageEvent.Delta
+					if atLineStart {
+						fmt.Printf("[%s] ", sessionName)
+					}
+					fmt.Print(delta)
+					atLineStart = len(delta) > 0 && delta[len(delta)-1] == '\n'
+				}
+			} else {
+				fmt.Printf("[%s] %s\n", sessionName, line)
+				atLineStart = true
+			}
+		}
+		if !atLineStart {
+			fmt.Println()
+		}
+	}()
+
+	exitCode, err := docker.Exec(ctx, state.Run.ContainerID, cmdArgs, envVars, pipeW, pipeW)
+	pipeW.Close()
+	wg.Wait()
+
+	state.Run.InputTokens += inputTokens
+	state.Run.OutputTokens += outputTokens
+	state.Run.CacheReadTokens += cacheReadTokens
+	state.Run.CacheWriteTokens += cacheWriteTokens
+	state.Run.CostUSD += costUSD
+	config.Save(repoRoot, state)
+
+	if err != nil {
+		return exitCode, fmt.Errorf("docker exec: %w", err)
+	}
+
+	return exitCode, nil
+}
+
+func cmdChatCommand() *cobra.Command {
+	var name, prompt, promptFile, agentFlag, modelFlag, imageFlag string
+
+	cmd := &cobra.Command{
+		Use:   "chat",
+		Short: "Start an interactive session with a long-lived container",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return cmdChat(name, prompt, promptFile, agentFlag, modelFlag, imageFlag)
+		},
+	}
+
+	cmd.Flags().StringVar(&name, "name", "", "session name (auto-generated if empty)")
+	cmd.Flags().StringVar(&prompt, "prompt", "", "initial prompt to send to the agent (required)")
+	cmd.Flags().StringVar(&promptFile, "prompt-file", "", "read prompt from file instead of --prompt")
+	cmd.Flags().StringVar(&agentFlag, "agent", "pi", "agent to use (default: pi)")
+	cmd.Flags().StringVar(&modelFlag, "model", "", "model to use (default from config or agent)")
+	cmd.Flags().StringVar(&imageFlag, "image", "", "docker image (default from config)")
+
+	return cmd
+}
+
+func cmdMessageCommand() *cobra.Command {
+	var name, message string
+
+	cmd := &cobra.Command{
+		Use:   "message",
+		Short: "Send a follow-up message to a waiting interactive session",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return cmdMessage(name, message)
+		},
+	}
+
+	cmd.Flags().StringVar(&name, "name", "", "session name (required if multiple sessions exist)")
+	cmd.Flags().StringVar(&message, "message", "", "message to send to the agent (required)")
+
+	cmd.RegisterFlagCompletionFunc("name", completionSessions)
+
+	return cmd
+}
+
+func cmdCloseCommand() *cobra.Command {
+	var name string
+
+	cmd := &cobra.Command{
+		Use:   "close",
+		Short: "Commit changes and clean up an interactive session",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			repoRoot, err := resolveRepoRoot()
+			if err != nil {
+				return err
+			}
+			return cmdClose(repoRoot, name)
+		},
+	}
+
+	cmd.Flags().StringVar(&name, "name", "", "session name (required if multiple sessions exist)")
+
+	cmd.RegisterFlagCompletionFunc("name", completionSessions)
+
+	return cmd
+}
+
+// cmdChat creates a worktree and a long-lived container, then runs the first agent turn.
+func cmdChat(sessionName, prompt, promptFile, agentFlag, modelFlag, imageFlag string) error {
+	userCfg, err := config.LoadUserConfig()
+	if err != nil {
+		return err
+	}
+
+	if sessionName == "" {
+		sessionName = generateSessionName()
+	}
+
+	resolvedPrompt := strings.TrimSpace(prompt)
+	if promptFile != "" {
+		data, err := os.ReadFile(promptFile)
+		if err != nil {
+			return fmt.Errorf("read prompt file: %w", err)
+		}
+		resolvedPrompt = strings.TrimSpace(string(data))
+	}
+	if resolvedPrompt == "" {
+		return fmt.Errorf("--prompt or --prompt-file is required")
+	}
+
+	if userCfg.Instructions != "" {
+		resolvedPrompt = userCfg.Instructions + "\n\n" + resolvedPrompt
+	}
+
+	if _, err := agent.Get(agentFlag); err != nil {
+		return err
+	}
+
+	model := modelFlag
+	if model == "" {
+		model = userCfg.DefaultModel
+	}
+
+	image := imageFlag
+	if image == "" {
+		image = userCfg.DefaultImage
+	}
+	if image == "" {
+		return fmt.Errorf("no docker image configured; use --image or set default_image in ~/.config/cerberus/config.json")
+	}
+
+	repoRoot, err := resolveRepoRoot()
+	if err != nil {
+		return err
+	}
+
+	if _, err := config.Load(repoRoot, sessionName); err == nil {
+		return fmt.Errorf("session %q already exists; run 'cerberus clean --name %s' first", sessionName, sessionName)
+	}
+
+	baseBranch, err := git.CurrentBranch(repoRoot)
+	if err != nil {
+		return err
+	}
+	baseCommit, err := git.CurrentCommit(repoRoot)
+	if err != nil {
+		return err
+	}
+
+	wtPath := filepath.Join(repoRoot, ".cerberus", "sessions", sessionName, "worktrees", "solve")
+	branchName := "cerberus/" + sessionName
+
+	if _, err := createWorktreePath(repoRoot, wtPath, branchName, baseCommit); err != nil {
+		return fmt.Errorf("create worktree: %w", err)
+	}
+
+	logPath := config.LogPath(repoRoot, sessionName)
+	if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err != nil {
+		return fmt.Errorf("create log dir: %w", err)
+	}
+
+	// Create the pi session dir on the host so the mount source exists.
+	piSessDir := config.PiSessionDir(repoRoot, sessionName)
+	if err := os.MkdirAll(piSessDir, 0o755); err != nil {
+		return fmt.Errorf("create pi session dir: %w", err)
+	}
+
+	state := &config.State{
+		Name:       sessionName,
+		BaseBranch: baseBranch,
+		BaseCommit: baseCommit,
+		Prompt:     resolvedPrompt,
+		Run: config.Run{
+			Branch:      branchName,
+			Worktree:    wtPath,
+			Agent:       agentFlag,
+			Model:       model,
+			Image:       image,
+			Interactive: true,
+			Status:      config.StatusPending,
+			LogFile:     logPath,
+			StartedAt:   time.Now(),
+		},
+	}
+
+	if err := config.Save(repoRoot, state); err != nil {
+		return fmt.Errorf("save state: %w", err)
+	}
+
+	fmt.Printf("session: %s\n", sessionName)
+	fmt.Printf("branch:  %s (%s)\n", baseBranch, baseCommit[:8])
+	fmt.Printf("agent:   %s (interactive)\n\n", agentFlag)
+
+	// Build mounts for the long-lived container.
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return fmt.Errorf("get home dir: %w", err)
+	}
+
+	mounts := []docker.Mount{
+		{Host: wtPath, Container: "/workspace"},
+		{Host: filepath.Join(homeDir, ".pi", "agent"), Container: "/root/.pi/agent"},
+		{Host: piSessDir, Container: "/tmp/pi-sessions"},
+	}
+
+	gradleInitD := filepath.Join(homeDir, ".gradle", "init.d")
+	if _, err := os.Stat(gradleInitD); err == nil {
+		mounts = append(mounts, docker.Mount{Host: gradleInitD, Container: "/root/.gradle/init.d", ReadOnly: true})
+	}
+
+	awsDir := filepath.Join(homeDir, ".aws")
+	if _, err := os.Stat(awsDir); err == nil {
+		mounts = append(mounts, docker.Mount{Host: awsDir, Container: "/root/.aws", ReadOnly: true})
+	}
+
+	envVars := buildInteractiveEnvVars(userCfg)
+
+	containerID, err := docker.Start(context.Background(), docker.StartArgs{
+		Image:   image,
+		Workdir: "/workspace",
+		Mounts:  mounts,
+		Env:     envVars,
+	})
+	if err != nil {
+		return fmt.Errorf("start container: %w", err)
+	}
+
+	state.Run.ContainerID = containerID
+	state.Run.Status = config.StatusRunning
+	if err := config.Save(repoRoot, state); err != nil {
+		return fmt.Errorf("save state: %w", err)
+	}
+
+	exitCode, err := runTurnViaExec(repoRoot, state, resolvedPrompt, userCfg)
+	if err != nil {
+		state.Run.Status = config.StatusFailed
+		config.Save(repoRoot, state)
+		return err
+	}
+
+	if exitCode != 0 {
+		state.Run.Status = config.StatusFailed
+		state.Run.ExitCode = exitCode
+		config.Save(repoRoot, state)
+		return fmt.Errorf("agent exited with code %d", exitCode)
+	}
+
+	state.Run.Status = config.StatusWaiting
+	if err := config.Save(repoRoot, state); err != nil {
+		return fmt.Errorf("save state: %w", err)
+	}
+
+	fmt.Printf("\n[%s] waiting for next message — use 'cerberus message --name %s'\n", sessionName, sessionName)
+	return nil
+}
+
+// cmdMessage sends a follow-up message to a waiting interactive session.
+func cmdMessage(name, message string) error {
+	if message == "" {
+		return fmt.Errorf("--message is required")
+	}
+
+	repoRoot, err := resolveRepoRoot()
+	if err != nil {
+		return err
+	}
+
+	sessionName, err := resolveSession(repoRoot, name)
+	if err != nil {
+		return err
+	}
+
+	state, err := config.Load(repoRoot, sessionName)
+	if err != nil {
+		return err
+	}
+
+	if !state.Run.Interactive {
+		return fmt.Errorf("session %q is not an interactive session; use 'cerberus rerun' instead", sessionName)
+	}
+
+	if state.Run.Status != config.StatusWaiting {
+		return fmt.Errorf("session %q is not waiting (status: %s)", sessionName, state.Run.Status)
+	}
+
+	userCfg, err := config.LoadUserConfig()
+	if err != nil {
+		return err
+	}
+
+	state.Run.Status = config.StatusRunning
+	if err := config.Save(repoRoot, state); err != nil {
+		return fmt.Errorf("save state: %w", err)
+	}
+
+	exitCode, err := runTurnViaExec(repoRoot, state, message, userCfg)
+	if err != nil {
+		state.Run.Status = config.StatusFailed
+		config.Save(repoRoot, state)
+		return err
+	}
+
+	if exitCode != 0 {
+		state.Run.Status = config.StatusFailed
+		state.Run.ExitCode = exitCode
+		config.Save(repoRoot, state)
+		return fmt.Errorf("agent exited with code %d", exitCode)
+	}
+
+	state.Run.Status = config.StatusWaiting
+	if err := config.Save(repoRoot, state); err != nil {
+		return fmt.Errorf("save state: %w", err)
+	}
+
+	fmt.Printf("\n[%s] waiting — use 'cerberus message' or 'cerberus close' to finish\n", sessionName)
+	return nil
+}
+
+// cmdClose commits any changes in an interactive session and cleans it up.
+func cmdClose(repoRoot, name string) error {
+	sessionName, err := resolveSession(repoRoot, name)
+	if err != nil {
+		return err
+	}
+
+	state, err := config.Load(repoRoot, sessionName)
+	if err != nil {
+		return err
+	}
+
+	if !state.Run.Interactive {
+		return fmt.Errorf("session %q is not an interactive session; use 'cerberus clean' instead", sessionName)
+	}
+
+	if state.Run.Status == config.StatusRunning {
+		return fmt.Errorf("session %q is still running; wait for it to finish first", sessionName)
+	}
+
+	hasChanges, err := git.HasChanges(state.Run.Worktree)
+	if err != nil {
+		return fmt.Errorf("check changes: %w", err)
+	}
+
+	if hasChanges {
+		fmt.Printf("[%s] committing...\n", sessionName)
+
+		diff, _ := git.Diff(state.Run.Worktree, state.BaseCommit)
+		commitMsg := agent.AskForCommitMessage(state.Run.Worktree, diff, state.Run.Model)
+		commitHash, err := git.CommitAndGetHash(state.Run.Worktree, commitMsg)
+		if err != nil {
+			return fmt.Errorf("commit failed: %w", err)
+		}
+
+		state.Run.CommitHash = commitHash
+		fmt.Printf("[%s] commit %s  %s\n", sessionName, commitHash[:8], commitMsg)
+	} else {
+		fmt.Printf("[%s] no changes to commit\n", sessionName)
+	}
+
+	state.Run.Status = config.StatusDone
+	state.Run.FinishedAt = time.Now()
+	config.Save(repoRoot, state)
+
+	if err := appendStats(state); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: append stats: %v\n", err)
+	}
+
+	return cmdClean(repoRoot, sessionName)
 }
