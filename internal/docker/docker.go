@@ -117,6 +117,86 @@ func Run(ctx context.Context, args RunArgs) (containerID string, exitCode int, e
 	return containerID, exitCode, nil
 }
 
+// StartArgs configures a detached docker run invocation for long-lived containers.
+type StartArgs struct {
+	Image    string   // Docker image name/tag
+	Workdir  string   // Working directory in container (-w)
+	Mounts   []Mount  // Volume mounts
+	Env      []string // Environment variables (KEY=VALUE)
+	EnvFile  string   // Path to env file (--env-file), empty if unused
+	Networks []string // Networks to attach (--network)
+}
+
+// Start launches a container in detached mode with a long-running no-op command (sleep infinity).
+// Returns the container ID and any error. The container is left running until explicitly stopped.
+func Start(ctx context.Context, args StartArgs) (string, error) {
+	cmd := exec.CommandContext(ctx, "docker", "run", "-d")
+
+	for _, m := range args.Mounts {
+		mount := fmt.Sprintf("%s:%s", m.Host, m.Container)
+		if m.ReadOnly {
+			mount = fmt.Sprintf("%s:ro", mount)
+		}
+		cmd.Args = append(cmd.Args, "-v", mount)
+	}
+
+	if args.EnvFile != "" {
+		cmd.Args = append(cmd.Args, "--env-file", args.EnvFile)
+	}
+
+	for _, e := range args.Env {
+		cmd.Args = append(cmd.Args, "-e", e)
+	}
+
+	for _, net := range args.Networks {
+		cmd.Args = append(cmd.Args, "--network", net)
+	}
+
+	if args.Workdir != "" {
+		cmd.Args = append(cmd.Args, "-w", args.Workdir)
+	}
+
+	cmd.Args = append(cmd.Args, args.Image, "sleep", "infinity")
+
+	var out strings.Builder
+	cmd.Stdout = &out
+	cmd.Stderr = os.Stderr
+
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("docker run -d: %w", err)
+	}
+
+	return strings.TrimSpace(out.String()), nil
+}
+
+// Exec runs a command inside an already-running container via docker exec.
+// env is an optional list of KEY=VALUE pairs passed as -e flags.
+// Returns the command exit code and any execution error.
+func Exec(ctx context.Context, containerID string, cmd []string, env []string, stdout, stderr io.Writer) (int, error) {
+	args := []string{"exec", "-i"}
+
+	for _, e := range env {
+		args = append(args, "-e", e)
+	}
+
+	args = append(args, containerID)
+	args = append(args, cmd...)
+
+	c := exec.CommandContext(ctx, "docker", args...)
+	c.Stdout = stdout
+	c.Stderr = stderr
+
+	err := c.Run()
+	if err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			return exitErr.ExitCode(), nil
+		}
+		return 1, fmt.Errorf("docker exec: %w", err)
+	}
+
+	return 0, nil
+}
+
 // Stop stops and removes a container by ID.
 // Ignores errors if the container is not found or already stopped.
 func Stop(containerID string) error {
