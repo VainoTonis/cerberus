@@ -8,11 +8,11 @@ Each run gets its own git worktree and branch. The agent runs headlessly and cha
 
 ```bash
 # Single one-shot run
-cerberus start -prompt "add input validation to the signup handler"
+cerberus start --prompt "add input validation to the signup handler"
 
 # Check what changed
 cerberus review        # files only
-cerberus review -diff  # full diffs
+cerberus review --diff  # full diffs
 
 # View logs or status
 cerberus logs
@@ -50,13 +50,75 @@ Create `~/.config/cerberus/config.json`:
 
 | Field | Description |
 |---|---|
-| `default_model` | Model to use if `-model` is not specified |
+| `default_model` | Model to use if `--model` is not specified |
 | `default_image` | Docker image for agent containers (required) |
 | `instructions` | Prepended to every prompt |
 | `aws_profile` | AWS profile for Bedrock API calls (optional) |
 | `aws_region` | AWS region for Bedrock (defaults to us-east-1) |
 | `max_turns` | Max conversation turns per session (default: 10) |
 | `max_output_tokens` | Max output tokens before killing agent (default: 50000) |
+
+### Agent (pi) Configuration
+
+The `pi` agent reads its provider and model config from `~/.pi/agent/models.json` on the host. This file is mounted into every agent container at `/root/.pi/agent/models.json`.
+
+For Ollama, the `baseUrl` must point to the container hostname on `sandbox-internal`, not `localhost`:
+
+```json
+{
+  "providers": {
+    "yourProviderName": {
+      "api": "openai-completions",
+      "apiKey": "ollama",
+      "baseUrl": "http://ollama:11434/v1",
+      "models": [
+        {
+          "id": "your-model-tag",
+          "contextWindow": 4096,
+          "input": ["text"],
+          "reasoning": false,
+          "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 }
+        }
+      ],
+      "compat": {
+        "supportsStore": false,
+        "supportsDeveloperRole": false,
+        "supportsReasoningEffort": false,
+        "supportsUsageInStreaming": false,
+        "supportsStrictMode": false
+      }
+    }
+  }
+}
+```
+
+`host.docker.internal` does not work on Linux — use the Ollama container name as the hostname instead.
+
+## Profiles
+
+A profile file overrides model, image, and env vars for a single run without touching your global config. Useful for switching providers (e.g. a local Ollama model vs Bedrock).
+
+Create a JSON file anywhere:
+
+```json
+{
+  "default_model": "mymodel:tag",
+  "default_image": "my-agent-image",
+  "extra_env": {
+    "SOME_VAR": "value"
+  }
+}
+```
+
+Pass it with `--profile-file`:
+
+```bash
+cerberus start --profile-file ./profiles/ollama.json --prompt "add input validation"
+```
+
+Profile values take precedence over `~/.config/cerberus/config.json`. The profile path is stored in session state and reused automatically on `rerun`.
+
+A `profiles/` directory in this repo contains ready-made examples.
 
 ## Commands
 
@@ -66,12 +128,13 @@ Run the agent once and commit the result.
 
 ```
 cerberus start [flags]
-  -prompt string       prompt to send to agent (required)
-  -prompt-file string  read prompt from file
-  -name string         session name (auto-generated if omitted)
-  -model string        model to use (overrides config)
-  -image string        docker image (overrides config)
-  -agent string        agent CLI (default: pi)
+  --prompt string        prompt to send to agent (required)
+  --prompt-file string   read prompt from file
+  --name string          session name (auto-generated if omitted)
+  --model string         model to use (overrides config)
+  --image string         docker image (overrides config)
+  --agent string         agent CLI (default: pi)
+  --profile-file string  path to a profile JSON file
 ```
 
 If changes are made, you'll be prompted for a commit message. Session state and logs are saved in `.cerberus/sessions/<name>/`.
@@ -82,8 +145,10 @@ Send another prompt to an existing session's worktree.
 
 ```
 cerberus rerun [flags]
-  -name string    session name (required if multiple active)
-  -prompt string  follow-up prompt (required)
+  --name string          session name (required if multiple active)
+  --prompt string        follow-up prompt (required)
+  --prompt-file string   read prompt from file
+  --profile-file string  override profile for this rerun
 ```
 
 Commits any new changes after the second run.
@@ -94,11 +159,12 @@ Start an interactive session with a long-lived container.
 
 ```
 cerberus chat [flags]
-  -prompt string  initial prompt (required)
-  -name string    session name (auto-generated if omitted)
-  -model string   model to use
-  -image string   docker image
-  -agent string   agent CLI (default: pi)
+  --prompt string        initial prompt (required)
+  --name string          session name (auto-generated if omitted)
+  --model string         model to use
+  --image string         docker image
+  --agent string         agent CLI (default: pi)
+  --profile-file string  path to a profile JSON file
 ```
 
 Container stays alive; use `cerberus message` for follow-up prompts.
@@ -109,8 +175,8 @@ Send a message to a waiting interactive session.
 
 ```
 cerberus message [flags]
-  -name string    session name (required if multiple active)
-  -message string message to send (required)
+  --name string     session name (required if multiple active)
+  --message string  message to send (required)
 ```
 
 ### `close`
@@ -119,7 +185,7 @@ Commit any changes in an interactive session and clean up.
 
 ```
 cerberus close [flags]
-  -name string  session name (required if multiple active)
+  --name string  session name (required if multiple active)
 ```
 
 ### `review`
@@ -128,8 +194,8 @@ Show what changed in a session.
 
 ```
 cerberus review [flags]
-  -name string  session name (required if multiple active)
-  -diff         print full unified diffs
+  --name string  session name (required if multiple active)
+  --diff         print full unified diffs
 ```
 
 ### `status`
@@ -138,7 +204,7 @@ Print session state: branch, status, tokens used, cost.
 
 ```
 cerberus status [flags]
-  -name string  session name (required if multiple active)
+  --name string  session name (required if multiple active)
 ```
 
 ### `logs`
@@ -147,7 +213,7 @@ Print the agent's full output log.
 
 ```
 cerberus logs [flags]
-  -name string  session name (required if multiple active)
+  --name string  session name (required if multiple active)
 ```
 
 ### `clean`
@@ -156,8 +222,8 @@ Remove session worktree, branch, and state. Stops any running container.
 
 ```
 cerberus clean [flags]
-  -name string  session name (required if multiple active)
-  -all          clean all sessions
+  --name string  session name (required if multiple active)
+  --all          clean all sessions
 ```
 
 ### `stats`
@@ -220,27 +286,33 @@ Add `.cerberus/` to `.gitignore`.
 ### One-shot fix
 
 ```bash
-cerberus start -prompt "fix the null pointer exception in auth.go"
-cerberus review -diff
+cerberus start --prompt "fix the null pointer exception in auth.go"
+cerberus review --diff
 cerberus clean
 ```
 
 ### Multi-turn exploration
 
 ```bash
-cerberus start -name research -prompt "survey the codebase for rate limiting implementations"
-cerberus rerun -name research -prompt "now add token bucket rate limiting to the API"
-cerberus review -name research
-cerberus clean -name research
+cerberus start --name research --prompt "survey the codebase for rate limiting implementations"
+cerberus rerun --name research --prompt "now add token bucket rate limiting to the API"
+cerberus review --name research
+cerberus clean --name research
 ```
 
 ### Interactive debugging
 
 ```bash
-cerberus chat -name debug -prompt "start with the failing test case" -image myimage
-cerberus message -name debug -message "add debug output in function X"
-cerberus message -name debug -message "commit what you have"
-cerberus close -name debug
+cerberus chat --name debug --prompt "start with the failing test case" --image myimage
+cerberus message --name debug --message "add debug output in function X"
+cerberus message --name debug --message "commit what you have"
+cerberus close --name debug
+```
+
+### Local model via Ollama
+
+```bash
+cerberus start --profile-file ./profiles/ollama.json --prompt "refactor the auth handler"
 ```
 
 ## Architecture

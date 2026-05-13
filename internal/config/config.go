@@ -22,13 +22,55 @@ const (
 
 // UserConfig holds user-level defaults loaded from ~/.config/cerberus/config.json.
 type UserConfig struct {
-	Instructions    string `json:"instructions"`
-	DefaultModel    string `json:"default_model,omitempty"`
-	DefaultImage    string `json:"default_image,omitempty"`
-	AWSProfile      string `json:"aws_profile,omitempty"`
-	AWSRegion       string `json:"aws_region,omitempty"`
-	MaxTurns        int    `json:"max_turns,omitempty"`
-	MaxOutputTokens int    `json:"max_output_tokens,omitempty"`
+	Instructions    string            `json:"instructions"`
+	DefaultModel    string            `json:"default_model,omitempty"`
+	DefaultImage    string            `json:"default_image,omitempty"`
+	AWSProfile      string            `json:"aws_profile,omitempty"`
+	AWSRegion       string            `json:"aws_region,omitempty"`
+	MaxTurns        int               `json:"max_turns,omitempty"`
+	MaxOutputTokens int               `json:"max_output_tokens,omitempty"`
+	ExtraEnv        map[string]string `json:"extra_env,omitempty"`
+}
+
+// ProfileFile holds provider-specific overrides that replace fields in UserConfig.
+// It is loaded from a file passed via --profile-file at runtime.
+type ProfileFile struct {
+	DefaultModel string            `json:"default_model,omitempty"`
+	DefaultImage string            `json:"default_image,omitempty"`
+	AWSProfile   string            `json:"aws_profile,omitempty"`
+	AWSRegion    string            `json:"aws_region,omitempty"`
+	ExtraEnv     map[string]string `json:"extra_env,omitempty"`
+}
+
+// LoadProfileFile reads a ProfileFile from the given path.
+func LoadProfileFile(path string) (ProfileFile, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ProfileFile{}, fmt.Errorf("read profile file %s: %w", path, err)
+	}
+	var p ProfileFile
+	if err := json.Unmarshal(data, &p); err != nil {
+		return ProfileFile{}, fmt.Errorf("parse profile file %s: %w", path, err)
+	}
+	return p, nil
+}
+
+// ApplyProfile overwrites UserConfig fields with non-empty values from the ProfileFile.
+// ExtraEnv is always replaced wholesale when the profile sets it (even if empty map).
+func ApplyProfile(cfg *UserConfig, p ProfileFile) {
+	if p.DefaultModel != "" {
+		cfg.DefaultModel = p.DefaultModel
+	}
+	if p.DefaultImage != "" {
+		cfg.DefaultImage = p.DefaultImage
+	}
+	if p.AWSProfile != "" {
+		cfg.AWSProfile = p.AWSProfile
+	}
+	if p.AWSRegion != "" {
+		cfg.AWSRegion = p.AWSRegion
+	}
+	cfg.ExtraEnv = p.ExtraEnv
 }
 
 // EffectiveMaxTurns returns MaxTurns if set, otherwise the default.
@@ -85,6 +127,7 @@ type Run struct {
 	Agent            string    `json:"agent"`
 	Model            string    `json:"model"`
 	Image            string    `json:"image"`
+	ProfileFile      string    `json:"profile_file,omitempty"`
 	ContainerID      string    `json:"container_id,omitempty"`
 	Status           RunStatus `json:"status"`
 	Interactive      bool      `json:"interactive,omitempty"`

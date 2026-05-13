@@ -55,6 +55,9 @@ func Run(ctx context.Context, args RunArgs) (containerID string, exitCode int, e
 	// Add cidfile flag.
 	cmd.Args = append(cmd.Args, "--cidfile", cidfilePath)
 
+	// Add --add-host so host.docker.internal resolves to the host on Linux.
+	cmd.Args = append(cmd.Args, "--add-host", "host.docker.internal:host-gateway")
+
 	// Add mounts.
 	for _, m := range args.Mounts {
 		mount := fmt.Sprintf("%s:%s", m.Host, m.Container)
@@ -131,6 +134,9 @@ type StartArgs struct {
 // Returns the container ID and any error. The container is left running until explicitly stopped.
 func Start(ctx context.Context, args StartArgs) (string, error) {
 	cmd := exec.CommandContext(ctx, "docker", "run", "-d")
+
+	// Add --add-host so host.docker.internal resolves to the host on Linux.
+	cmd.Args = append(cmd.Args, "--add-host", "host.docker.internal:host-gateway")
 
 	for _, m := range args.Mounts {
 		mount := fmt.Sprintf("%s:%s", m.Host, m.Container)

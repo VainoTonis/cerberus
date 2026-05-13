@@ -55,13 +55,13 @@ func main() {
 }
 
 func cmdStartCommand() *cobra.Command {
-	var name, prompt, promptFile, agentFlag, modelFlag, imageFlag string
+	var name, prompt, promptFile, agentFlag, modelFlag, imageFlag, profileFile string
 
 	cmd := &cobra.Command{
 		Use:   "start",
 		Short: "Start a single agent run in an isolated worktree",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return cmdStart(name, prompt, promptFile, agentFlag, modelFlag, imageFlag)
+			return cmdStart(name, prompt, promptFile, agentFlag, modelFlag, imageFlag, profileFile)
 		},
 	}
 
@@ -71,6 +71,7 @@ func cmdStartCommand() *cobra.Command {
 	cmd.Flags().StringVar(&agentFlag, "agent", "pi", "agent to use (default: pi)")
 	cmd.Flags().StringVar(&modelFlag, "model", "", "model to use (default from config or agent)")
 	cmd.Flags().StringVar(&imageFlag, "image", "", "docker image (default from config)")
+	cmd.Flags().StringVar(&profileFile, "profile-file", "", "path to a profile JSON file to override model, image, and env vars")
 
 	cmd.RegisterFlagCompletionFunc("name", completionSessions)
 
@@ -78,19 +79,20 @@ func cmdStartCommand() *cobra.Command {
 }
 
 func cmdRerunCommand() *cobra.Command {
-	var name, prompt, promptFile string
+	var name, prompt, promptFile, profileFile string
 
 	cmd := &cobra.Command{
 		Use:   "rerun",
 		Short: "Run the agent again in an existing session worktree",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return cmdRerun(name, prompt, promptFile)
+			return cmdRerun(name, prompt, promptFile, profileFile)
 		},
 	}
 
 	cmd.Flags().StringVar(&name, "name", "", "session name (required if multiple sessions exist)")
 	cmd.Flags().StringVar(&prompt, "prompt", "", "follow-up prompt for agent (required)")
 	cmd.Flags().StringVar(&promptFile, "prompt-file", "", "read prompt from file instead of -prompt")
+	cmd.Flags().StringVar(&profileFile, "profile-file", "", "path to a profile JSON file to override model, image, and env vars (overrides stored profile)")
 
 	cmd.RegisterFlagCompletionFunc("name", completionSessions)
 
@@ -270,10 +272,18 @@ func createWorktreePath(repoRoot, wtPath, branchName, baseCommit string) (string
 
 // cmdStart creates a git worktree and runs an agent inside a docker container,
 // then commits the result.
-func cmdStart(sessionName, prompt, promptFile, agentFlag, modelFlag, imageFlag string) error {
+func cmdStart(sessionName, prompt, promptFile, agentFlag, modelFlag, imageFlag, profileFile string) error {
 	userCfg, err := config.LoadUserConfig()
 	if err != nil {
 		return err
+	}
+
+	if profileFile != "" {
+		p, err := config.LoadProfileFile(profileFile)
+		if err != nil {
+			return err
+		}
+		config.ApplyProfile(&userCfg, p)
 	}
 
 	// Auto-generate session name if empty
@@ -359,14 +369,15 @@ func cmdStart(sessionName, prompt, promptFile, agentFlag, modelFlag, imageFlag s
 		BaseCommit: baseCommit,
 		Prompt:     resolvedPrompt,
 		Run: config.Run{
-			Branch:    branchName,
-			Worktree:  wtPath,
-			Agent:     agentFlag,
-			Model:     model,
-			Image:     image,
-			Status:    config.StatusPending,
-			LogFile:   logPath,
-			StartedAt: time.Now(),
+			Branch:      branchName,
+			Worktree:    wtPath,
+			Agent:       agentFlag,
+			Model:       model,
+			Image:       image,
+			ProfileFile: profileFile,
+			Status:      config.StatusPending,
+			LogFile:     logPath,
+			StartedAt:   time.Now(),
 		},
 	}
 
@@ -621,6 +632,9 @@ func runAgentInDocker(repoRoot string, state *config.State, prompt string, agent
 		}
 	}
 	envVars = append(envVars, "PI_CODING_AGENT_SESSION_DIR=/tmp/pi-sessions")
+	for k, v := range userCfg.ExtraEnv {
+		envVars = append(envVars, k+"="+v)
+	}
 
 	runArgs := docker.RunArgs{
 		Image:    state.Run.Image,
@@ -689,7 +703,7 @@ func agentEnvFilePath() string {
 }
 
 // cmdRerun runs the agent again in an existing worktree with a new prompt.
-func cmdRerun(name, prompt, promptFile string) error {
+func cmdRerun(name, prompt, promptFile, profileFile string) error {
 	repoRoot, err := resolveRepoRoot()
 	if err != nil {
 		return err
@@ -729,6 +743,24 @@ func cmdRerun(name, prompt, promptFile string) error {
 		return err
 	}
 
+	// Resolve user config, applying profile. --profile-file flag overrides stored profile.
+	userCfg, err := config.LoadUserConfig()
+	if err != nil {
+		return err
+	}
+	effectiveProfileFile := state.Run.ProfileFile
+	if profileFile != "" {
+		effectiveProfileFile = profileFile
+		state.Run.ProfileFile = profileFile
+	}
+	if effectiveProfileFile != "" {
+		p, err := config.LoadProfileFile(effectiveProfileFile)
+		if err != nil {
+			return err
+		}
+		config.ApplyProfile(&userCfg, p)
+	}
+
 	// Append to log file
 	logFile, err := os.OpenFile(state.Run.LogFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 	if err != nil {
@@ -740,7 +772,7 @@ func cmdRerun(name, prompt, promptFile string) error {
 	fmt.Printf("rerunning session %q with new prompt...\n", sessionName)
 
 	// Run agent again
-	exitCode, err := runAgentInDockerRerun(repoRoot, state, resolvedPrompt, agentImpl, logFile)
+	exitCode, err := runAgentInDockerRerun(repoRoot, state, resolvedPrompt, agentImpl, logFile, userCfg)
 	if err != nil {
 		return err
 	}
@@ -796,7 +828,7 @@ func cmdRerun(name, prompt, promptFile string) error {
 }
 
 // runAgentInDockerRerun is similar to runAgentInDocker but appends to an existing log file.
-func runAgentInDockerRerun(repoRoot string, state *config.State, prompt string, agentImpl agent.Agent, logFile *os.File) (int, error) {
+func runAgentInDockerRerun(repoRoot string, state *config.State, prompt string, agentImpl agent.Agent, logFile *os.File, rerunUserCfg config.UserConfig) (int, error) {
 	sessionName := state.Name
 	wtPath := state.Run.Worktree
 
@@ -856,9 +888,6 @@ func runAgentInDockerRerun(repoRoot string, state *config.State, prompt string, 
 
 	// Load proxy env file from ~/.config/cerberus/agent.env.
 	envFile := agentEnvFilePath()
-
-	// Run docker
-	rerunUserCfg, _ := config.LoadUserConfig()
 
 	// Create output pipe
 	pipeR, pipeW := io.Pipe()
@@ -953,6 +982,9 @@ func runAgentInDockerRerun(repoRoot string, state *config.State, prompt string, 
 		}
 	}
 	envVarsRerun = append(envVarsRerun, "PI_CODING_AGENT_SESSION_DIR=/tmp/pi-sessions")
+	for k, v := range rerunUserCfg.ExtraEnv {
+		envVarsRerun = append(envVarsRerun, k+"="+v)
+	}
 
 	runArgs := docker.RunArgs{
 		Image:    state.Run.Image,
@@ -1330,6 +1362,9 @@ func buildInteractiveEnvVars(userCfg config.UserConfig) []string {
 	}
 	// The pi session dir is mounted at /tmp/pi-sessions in the container via the volume mount.
 	envVars = append(envVars, "PI_CODING_AGENT_SESSION_DIR=/tmp/pi-sessions")
+	for k, v := range userCfg.ExtraEnv {
+		envVars = append(envVars, k+"="+v)
+	}
 	return envVars
 }
 
@@ -1475,13 +1510,13 @@ func runTurnViaExec(repoRoot string, state *config.State, prompt string, userCfg
 }
 
 func cmdChatCommand() *cobra.Command {
-	var name, prompt, promptFile, agentFlag, modelFlag, imageFlag string
+	var name, prompt, promptFile, agentFlag, modelFlag, imageFlag, profileFile string
 
 	cmd := &cobra.Command{
 		Use:   "chat",
 		Short: "Start an interactive session with a long-lived container",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return cmdChat(name, prompt, promptFile, agentFlag, modelFlag, imageFlag)
+			return cmdChat(name, prompt, promptFile, agentFlag, modelFlag, imageFlag, profileFile)
 		},
 	}
 
@@ -1491,6 +1526,7 @@ func cmdChatCommand() *cobra.Command {
 	cmd.Flags().StringVar(&agentFlag, "agent", "pi", "agent to use (default: pi)")
 	cmd.Flags().StringVar(&modelFlag, "model", "", "model to use (default from config or agent)")
 	cmd.Flags().StringVar(&imageFlag, "image", "", "docker image (default from config)")
+	cmd.Flags().StringVar(&profileFile, "profile-file", "", "path to a profile JSON file to override model, image, and env vars")
 
 	return cmd
 }
@@ -1537,10 +1573,18 @@ func cmdCloseCommand() *cobra.Command {
 }
 
 // cmdChat creates a worktree and a long-lived container, then runs the first agent turn.
-func cmdChat(sessionName, prompt, promptFile, agentFlag, modelFlag, imageFlag string) error {
+func cmdChat(sessionName, prompt, promptFile, agentFlag, modelFlag, imageFlag, profileFile string) error {
 	userCfg, err := config.LoadUserConfig()
 	if err != nil {
 		return err
+	}
+
+	if profileFile != "" {
+		p, err := config.LoadProfileFile(profileFile)
+		if err != nil {
+			return err
+		}
+		config.ApplyProfile(&userCfg, p)
 	}
 
 	if sessionName == "" {
@@ -1627,6 +1671,7 @@ func cmdChat(sessionName, prompt, promptFile, agentFlag, modelFlag, imageFlag st
 			Agent:       agentFlag,
 			Model:       model,
 			Image:       image,
+			ProfileFile: profileFile,
 			Interactive: true,
 			Status:      config.StatusPending,
 			LogFile:     logPath,
@@ -1744,6 +1789,14 @@ func cmdMessage(name, message string) error {
 	userCfg, err := config.LoadUserConfig()
 	if err != nil {
 		return err
+	}
+
+	if state.Run.ProfileFile != "" {
+		p, err := config.LoadProfileFile(state.Run.ProfileFile)
+		if err != nil {
+			return err
+		}
+		config.ApplyProfile(&userCfg, p)
 	}
 
 	state.Run.Status = config.StatusRunning
