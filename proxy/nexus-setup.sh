@@ -104,7 +104,24 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 5. Create proxy repositories
+# 5. Accept Community Edition EULA
+# ---------------------------------------------------------------------------
+log "Accepting Community Edition EULA..."
+HTTP=$(curl -sf -o /dev/null -w "%{http_code}" \
+  -X POST "${NEXUS_URL}/service/rest/v1/system/eula" \
+  "${CURL_AUTH[@]}" \
+  -H "Content-Type: application/json" \
+  -d '{"disclaimer": "Use of Sonatype Nexus Repository - Community Edition is governed by the End User License Agreement at https://links.sonatype.com/products/nxrm/ce-eula. By returning the value from \u2018accepted:false\u2019 to \u2018accepted:true\u2019, you acknowledge that you have read and agree to the End User License Agreement at https://links.sonatype.com/products/nxrm/ce-eula.", "accepted": true}' || true)
+
+if [[ "${HTTP}" == "204" ]]; then
+  log "EULA accepted."
+else
+  err "Failed to accept EULA. HTTP: ${HTTP}"
+  exit 1
+fi
+
+# ---------------------------------------------------------------------------
+# 6. Create proxy repositories
 # ---------------------------------------------------------------------------
 create_repo() {
   local name="$1"

@@ -1,7 +1,9 @@
 networks:
   sandbox-internal:
+    name: sandbox-internal
     internal: true
   nexus-external:
+    name: nexus-external
     driver: bridge
 
 volumes:

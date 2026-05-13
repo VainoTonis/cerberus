@@ -508,20 +508,14 @@ func runAgentInDocker(repoRoot string, state *config.State, prompt string, agent
 		})
 	}
 
-	// Determine networks
-	// TODO: re-enable sandbox network restriction once agent auth is working
-	var networks []string
-	// if networkExists("sandbox-internal") {
-	// 	networks = append(networks, "sandbox-internal")
-	// }
+	// Require proxy network — fail early if proxy stack isn't running.
+	if err := requireProxyNetwork(); err != nil {
+		return 0, err
+	}
+	networks := []string{"sandbox-internal"}
 
-	// Resolve env file if it exists
-	// TODO: re-enable proxy env file once sandbox network is in use
-	envFile := ""
-	// envFilePath := filepath.Join(repoRoot, "proxy", "agent.env")
-	// if _, err := os.Stat(envFilePath); err == nil {
-	// 	envFile = envFilePath
-	// }
+	// Load proxy env file from ~/.config/cerberus/agent.env.
+	envFile := agentEnvFilePath()
 
 	// Create output file for JSON lines
 	pipeR, pipeW := io.Pipe()
@@ -667,9 +661,31 @@ func runAgentInDocker(repoRoot string, state *config.State, prompt string, agent
 
 // networkExists checks if a docker network exists.
 func networkExists(networkName string) bool {
-	// Try docker network inspect
 	cmd := exec.Command("docker", "network", "inspect", networkName)
 	return cmd.Run() == nil
+}
+
+// requireProxyNetwork returns an error if the sandbox-internal Docker network
+// does not exist. The proxy stack (proxy/docker-compose.yml) must be running.
+func requireProxyNetwork() error {
+	if !networkExists("sandbox-internal") {
+		return fmt.Errorf("proxy network not running — start it with:\n  cd proxy && docker compose up -d")
+	}
+	return nil
+}
+
+// agentEnvFilePath returns the path to ~/.config/cerberus/agent.env, or empty
+// string if the file does not exist.
+func agentEnvFilePath() string {
+	dir, err := os.UserConfigDir()
+	if err != nil {
+		return ""
+	}
+	p := filepath.Join(dir, "cerberus", "agent.env")
+	if _, err := os.Stat(p); err != nil {
+		return ""
+	}
+	return p
 }
 
 // cmdRerun runs the agent again in an existing worktree with a new prompt.
@@ -832,20 +848,14 @@ func runAgentInDockerRerun(repoRoot string, state *config.State, prompt string, 
 		})
 	}
 
-	// Determine networks
-	// TODO: re-enable sandbox network restriction once agent auth is working
-	var networks []string
-	// if networkExists("sandbox-internal") {
-	// 	networks = append(networks, "sandbox-internal")
-	// }
+	// Require proxy network — fail early if proxy stack isn't running.
+	if err := requireProxyNetwork(); err != nil {
+		return 0, err
+	}
+	networks := []string{"sandbox-internal"}
 
-	// Resolve env file
-	// TODO: re-enable proxy env file once sandbox network is in use
-	envFile := ""
-	// envFilePath := filepath.Join(repoRoot, "proxy", "agent.env")
-	// if _, err := os.Stat(envFilePath); err == nil {
-	// 	envFile = envFilePath
-	// }
+	// Load proxy env file from ~/.config/cerberus/agent.env.
+	envFile := agentEnvFilePath()
 
 	// Run docker
 	rerunUserCfg, _ := config.LoadUserConfig()
@@ -1656,11 +1666,18 @@ func cmdChat(sessionName, prompt, promptFile, agentFlag, modelFlag, imageFlag st
 
 	envVars := buildInteractiveEnvVars(userCfg)
 
+	// Require proxy network — fail early if proxy stack isn't running.
+	if err := requireProxyNetwork(); err != nil {
+		return err
+	}
+
 	containerID, err := docker.Start(context.Background(), docker.StartArgs{
-		Image:   image,
-		Workdir: "/workspace",
-		Mounts:  mounts,
-		Env:     envVars,
+		Image:    image,
+		Workdir:  "/workspace",
+		Mounts:   mounts,
+		Env:      envVars,
+		EnvFile:  agentEnvFilePath(),
+		Networks: []string{"sandbox-internal"},
 	})
 	if err != nil {
 		return fmt.Errorf("start container: %w", err)
