@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -604,7 +605,7 @@ func runAgentInDocker(repoRoot string, state *config.State, prompt string, agent
 
 	mounts := []docker.Mount{
 		{Host: wtPath, Container: "/workspace"},
-		{Host: filepath.Join(homeDir, ".pi", "agent"), Container: "/home/agent/.pi/agent"},
+		{Host: filepath.Join(homeDir, ".pi", "agent"), Container: "/home/agent/.pi/agent", ReadOnly: true},
 	}
 
 	gradleInitD := filepath.Join(homeDir, ".gradle", "init.d")
@@ -615,6 +616,10 @@ func runAgentInDocker(repoRoot string, state *config.State, prompt string, agent
 	awsDir := filepath.Join(homeDir, ".aws")
 	if _, err := os.Stat(awsDir); err == nil {
 		mounts = append(mounts, docker.Mount{Host: awsDir, Container: "/home/agent/.aws", ReadOnly: true})
+	}
+
+	if err := ensureCopilotToken(); err != nil {
+		return 0, fmt.Errorf("copilot token refresh: %w", err)
 	}
 
 	if err := requireProxyNetwork(); err != nil {
@@ -701,6 +706,109 @@ func runAgentInDocker(repoRoot string, state *config.State, prompt string, agent
 	config.Save(repoRoot, state)
 
 	return exitCode, nil
+}
+
+// ensureCopilotToken checks if the GitHub Copilot token is expiring soon and refreshes it if needed.
+func ensureCopilotToken() error {
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return fmt.Errorf("get home dir: %w", err)
+	}
+
+	authPath := filepath.Join(homeDir, ".pi", "agent", "auth.json")
+
+	// Check if file exists
+	data, err := os.ReadFile(authPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil // Not everyone uses copilot
+		}
+		return fmt.Errorf("read auth.json: %w", err)
+	}
+
+	// Parse as map[string]json.RawMessage
+	var authMap map[string]json.RawMessage
+	if err := json.Unmarshal(data, &authMap); err != nil {
+		return nil // Invalid JSON, skip
+	}
+
+	// Check github-copilot entry
+	copilotRaw, exists := authMap["github-copilot"]
+	if !exists {
+		return nil // No github-copilot entry
+	}
+
+	// Parse github-copilot entry
+	var copilotEntry struct {
+		Expires int64 `json:"expires"`
+	}
+	if err := json.Unmarshal(copilotRaw, &copilotEntry); err != nil {
+		return nil // Cannot parse, skip
+	}
+
+	// Check if expires within 10 minutes
+	if copilotEntry.Expires == 0 {
+		return nil // No expiry set
+	}
+
+	if time.Now().Add(10*time.Minute).UnixMilli() < copilotEntry.Expires {
+		return nil // Not expiring soon
+	}
+
+	// Need to refresh - acquire exclusive lock
+	lockPath := filepath.Join(homeDir, ".pi", "agent", "refresh.lock")
+
+	lockFile, err := os.OpenFile(lockPath, os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return fmt.Errorf("open lock file: %w", err)
+	}
+	defer lockFile.Close()
+
+	// Acquire exclusive lock
+	if err := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_EX); err != nil {
+		return fmt.Errorf("acquire lock: %w", err)
+	}
+	defer syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN)
+
+	// Re-read auth.json to check if another process already refreshed
+	data, err = os.ReadFile(authPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("re-read auth.json: %w", err)
+	}
+
+	var authMapRecheck map[string]json.RawMessage
+	if err := json.Unmarshal(data, &authMapRecheck); err != nil {
+		return nil
+	}
+
+	copilotRawRecheck, exists := authMapRecheck["github-copilot"]
+	if exists {
+		var copilotEntryRecheck struct {
+			Expires int64 `json:"expires"`
+		}
+		if err := json.Unmarshal(copilotRawRecheck, &copilotEntryRecheck); err == nil {
+			if copilotEntryRecheck.Expires != 0 && time.Now().Add(10*time.Minute).UnixMilli() < copilotEntryRecheck.Expires {
+				return nil // Already refreshed by another process
+			}
+		}
+	}
+
+	// Run pi command with 30s timeout
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "pi", "-p", "say: ok")
+	cmd.Stdout = os.Stderr
+	cmd.Stderr = os.Stderr
+
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("refresh token: %w", err)
+	}
+
+	return nil
 }
 
 // networkExists checks if a docker network exists.
