@@ -256,9 +256,9 @@ func cmdPs() error {
 	}
 
 	// Print table header
-	fmt.Printf("%-20s  %-10s  %-15s  %-10s  %-12s  %s\n",
-		"NAME", "STATUS", "MODEL", "AGENT", "STARTED_AT", "ORPHANED")
-	fmt.Println(strings.Repeat("-", 94))
+	fmt.Printf("%-20s  %-22s  %-15s  %-10s  %-12s\n",
+		"NAME", "STATUS", "MODEL", "AGENT", "STARTED")
+	fmt.Println(strings.Repeat("-", 87))
 
 	// Load and display each session
 	for _, sessionName := range sessions {
@@ -297,8 +297,8 @@ func cmdPs() error {
 			status = status + " " + orphanedStr
 		}
 
-		fmt.Printf("%-20s  %-10s  %-15s  %-10s  %-12s  %s\n",
-			name, status, modelStr, agent, relTime, orphanedStr)
+		fmt.Printf("%-20s  %-22s  %-15s  %-10s  %-12s\n",
+			name, status, modelStr, agent, relTime)
 	}
 
 	return nil
