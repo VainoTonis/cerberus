@@ -135,6 +135,8 @@ cerberus start [flags]
   --image string         docker image (overrides config)
   --agent string         agent CLI (default: pi)
   --profile-file string  path to a profile JSON file
+  --output string        output format: text (default) or jsonl
+  --callback string      URL to POST events to as they happen
 ```
 
 If changes are made, you'll be prompted for a commit message. Session state and logs are saved in `.cerberus/sessions/<name>/`.
@@ -149,6 +151,8 @@ cerberus rerun [flags]
   --prompt string        follow-up prompt (required)
   --prompt-file string   read prompt from file
   --profile-file string  override profile for this rerun
+  --output string        output format: text (default) or jsonl
+  --callback string      URL to POST events to as they happen
 ```
 
 Commits any new changes after the second run.
@@ -165,6 +169,8 @@ cerberus chat [flags]
   --image string         docker image
   --agent string         agent CLI (default: pi)
   --profile-file string  path to a profile JSON file
+  --output string        output format: text (default) or jsonl
+  --callback string      URL to POST events to as they happen
 ```
 
 Container stays alive; use `cerberus message` for follow-up prompts.
@@ -175,8 +181,10 @@ Send a message to a waiting interactive session.
 
 ```
 cerberus message [flags]
-  --name string     session name (required if multiple active)
-  --message string  message to send (required)
+  --name string      session name (required if multiple active)
+  --message string   message to send (required)
+  --output string    output format: text (default) or jsonl
+  --callback string  URL to POST events to as they happen
 ```
 
 ### `close`
@@ -313,6 +321,30 @@ cerberus close --name debug
 
 ```bash
 cerberus start --profile-file ./profiles/ollama.json --prompt "refactor the auth handler"
+```
+
+## Output Modes
+
+By default, cerberus prints human-readable text deltas prefixed with the session name. Two flags control output behavior:
+
+### `--output jsonl`
+
+Emit one JSON object per line to stdout instead of text. Each event has this shape:
+
+```json
+{"type":"text_delta","session":"my-session","ts":"...","content":"hello"}
+{"type":"message_end","session":"my-session","ts":"...","usage":{"input_tokens":100,"output_tokens":50,"cache_read_tokens":0,"cache_write_tokens":0,"cost_usd":0.001}}
+{"type":"turn_complete","session":"my-session","ts":"...","status":"waiting"}
+```
+
+Event types: `session_start`, `text_delta`, `tool_use`, `tool_result`, `message_end`, `turn_complete`, `log`, `raw`.
+
+### `--callback <url>`
+
+POST each event as JSON to the given URL. Callback errors are logged to stderr but do not stop the run. Can be combined with `--output`:
+
+```bash
+cerberus start --output jsonl --callback https://example.com/hook --prompt "fix the bug"
 ```
 
 ## Architecture

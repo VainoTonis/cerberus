@@ -19,7 +19,9 @@ import (
 	"github.com/tonis/cerberus/internal/agent"
 	"github.com/tonis/cerberus/internal/config"
 	"github.com/tonis/cerberus/internal/docker"
+	"github.com/tonis/cerberus/internal/event"
 	"github.com/tonis/cerberus/internal/git"
+	"github.com/tonis/cerberus/internal/stream"
 )
 
 // version is set at build time via -ldflags "-X main.version=..."
@@ -56,12 +58,13 @@ func main() {
 
 func cmdStartCommand() *cobra.Command {
 	var name, prompt, promptFile, agentFlag, modelFlag, imageFlag, profileFile string
+	var outputFlag, callbackFlag string
 
 	cmd := &cobra.Command{
 		Use:   "start",
 		Short: "Start a single agent run in an isolated worktree",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return cmdStart(name, prompt, promptFile, agentFlag, modelFlag, imageFlag, profileFile)
+			return cmdStart(name, prompt, promptFile, agentFlag, modelFlag, imageFlag, profileFile, outputFlag, callbackFlag)
 		},
 	}
 
@@ -72,6 +75,8 @@ func cmdStartCommand() *cobra.Command {
 	cmd.Flags().StringVar(&modelFlag, "model", "", "model to use (default from config or agent)")
 	cmd.Flags().StringVar(&imageFlag, "image", "", "docker image (default from config)")
 	cmd.Flags().StringVar(&profileFile, "profile-file", "", "path to a profile JSON file to override model, image, and env vars")
+	cmd.Flags().StringVar(&outputFlag, "output", "text", "output format: text (default) or jsonl")
+	cmd.Flags().StringVar(&callbackFlag, "callback", "", "URL to POST events to as they happen")
 
 	cmd.RegisterFlagCompletionFunc("name", completionSessions)
 
@@ -80,12 +85,13 @@ func cmdStartCommand() *cobra.Command {
 
 func cmdRerunCommand() *cobra.Command {
 	var name, prompt, promptFile, profileFile string
+	var outputFlag, callbackFlag string
 
 	cmd := &cobra.Command{
 		Use:   "rerun",
 		Short: "Run the agent again in an existing session worktree",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return cmdRerun(name, prompt, promptFile, profileFile)
+			return cmdRerun(name, prompt, promptFile, profileFile, outputFlag, callbackFlag)
 		},
 	}
 
@@ -93,6 +99,8 @@ func cmdRerunCommand() *cobra.Command {
 	cmd.Flags().StringVar(&prompt, "prompt", "", "follow-up prompt for agent (required)")
 	cmd.Flags().StringVar(&promptFile, "prompt-file", "", "read prompt from file instead of -prompt")
 	cmd.Flags().StringVar(&profileFile, "profile-file", "", "path to a profile JSON file to override model, image, and env vars (overrides stored profile)")
+	cmd.Flags().StringVar(&outputFlag, "output", "text", "output format: text (default) or jsonl")
+	cmd.Flags().StringVar(&callbackFlag, "callback", "", "URL to POST events to as they happen")
 
 	cmd.RegisterFlagCompletionFunc("name", completionSessions)
 
@@ -272,7 +280,7 @@ func createWorktreePath(repoRoot, wtPath, branchName, baseCommit string) (string
 
 // cmdStart creates a git worktree and runs an agent inside a docker container,
 // then commits the result.
-func cmdStart(sessionName, prompt, promptFile, agentFlag, modelFlag, imageFlag, profileFile string) error {
+func cmdStart(sessionName, prompt, promptFile, agentFlag, modelFlag, imageFlag, profileFile, output, callback string) error {
 	userCfg, err := config.LoadUserConfig()
 	if err != nil {
 		return err
@@ -390,7 +398,7 @@ func cmdStart(sessionName, prompt, promptFile, agentFlag, modelFlag, imageFlag, 
 	fmt.Printf("agent:   %s\n\n", agentFlag)
 
 	// Run agent in docker
-	exitCode, err := runAgentInDocker(repoRoot, state, resolvedPrompt, agentImpl, model, userCfg)
+	exitCode, err := runAgentInDocker(repoRoot, state, resolvedPrompt, agentImpl, model, userCfg, output, callback)
 	if err != nil {
 		return err
 	}
@@ -459,12 +467,11 @@ func cmdStart(sessionName, prompt, promptFile, agentFlag, modelFlag, imageFlag, 
 }
 
 // runAgentInDocker executes the agent in a docker container and streams output.
-func runAgentInDocker(repoRoot string, state *config.State, prompt string, agentImpl agent.Agent, model string, userCfg config.UserConfig) (int, error) {
+func runAgentInDocker(repoRoot string, state *config.State, prompt string, agentImpl agent.Agent, model string, userCfg config.UserConfig, output, callback string) (int, error) {
 	sessionName := state.Name
 	wtPath := state.Run.Worktree
 	logPath := state.Run.LogFile
 
-	// Get agent args
 	cmdArgs, err := agentImpl.Args(agent.RunArgs{
 		Prompt: prompt,
 		Model:  model,
@@ -473,148 +480,55 @@ func runAgentInDocker(repoRoot string, state *config.State, prompt string, agent
 		return 1, fmt.Errorf("build command: %w", err)
 	}
 
-	// Create log file
 	logFile, err := os.Create(logPath)
 	if err != nil {
 		return 1, fmt.Errorf("create log file: %w", err)
 	}
 	defer logFile.Close()
 
-	// Build docker mounts
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		return 1, fmt.Errorf("get home dir: %w", err)
 	}
 
 	mounts := []docker.Mount{
-		{
-			Host:      wtPath,
-			Container: "/workspace",
-			ReadOnly:  false,
-		},
-		{
-			Host:      filepath.Join(homeDir, ".pi", "agent"),
-			Container: "/root/.pi/agent",
-			ReadOnly:  false,
-		},
+		{Host: wtPath, Container: "/workspace"},
+		{Host: filepath.Join(homeDir, ".pi", "agent"), Container: "/root/.pi/agent"},
 	}
 
-	// Add ~/.gradle/init.d if it exists
 	gradleInitD := filepath.Join(homeDir, ".gradle", "init.d")
 	if _, err := os.Stat(gradleInitD); err == nil {
-		mounts = append(mounts, docker.Mount{
-			Host:      gradleInitD,
-			Container: "/root/.gradle/init.d",
-			ReadOnly:  true,
-		})
+		mounts = append(mounts, docker.Mount{Host: gradleInitD, Container: "/root/.gradle/init.d", ReadOnly: true})
 	}
 
-	// Add ~/.aws if it exists (needed for AWS provider credentials)
 	awsDir := filepath.Join(homeDir, ".aws")
 	if _, err := os.Stat(awsDir); err == nil {
-		mounts = append(mounts, docker.Mount{
-			Host:      awsDir,
-			Container: "/root/.aws",
-			ReadOnly:  true,
-		})
+		mounts = append(mounts, docker.Mount{Host: awsDir, Container: "/root/.aws", ReadOnly: true})
 	}
 
-	// Require proxy network — fail early if proxy stack isn't running.
 	if err := requireProxyNetwork(); err != nil {
 		return 0, err
 	}
-	networks := []string{"sandbox-internal"}
 
-	// Load proxy env file from ~/.config/cerberus/agent.env.
 	envFile := agentEnvFilePath()
 
-	// Create output file for JSON lines
 	pipeR, pipeW := io.Pipe()
-
-	// Stream handler
-	var accumulatedTokens, accumulatedCost struct {
-		input      int
-		output     int
-		cacheRead  int
-		cacheWrite int
-		costUSD    float64
-	}
 
 	ctx, cancelRun := context.WithCancel(context.Background())
 	defer cancelRun()
 
+	emitter := buildEmitter(sessionName, output, callback)
+
+	proc := stream.NewProcessor(sessionName, emitter, logFile, stream.Limits{
+		MaxTurns:        userCfg.EffectiveMaxTurns(),
+		MaxOutputTokens: userCfg.EffectiveMaxOutputTokens(),
+	}, cancelRun)
+
 	go func() {
 		defer pipeR.Close()
-		scanner := bufio.NewScanner(pipeR)
-		scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
-		turns := 0
-		for scanner.Scan() {
-			line := scanner.Text()
-			fmt.Fprintln(logFile, line)
-
-			// Parse JSON event (pi --mode json format)
-			var event struct {
-				Type    string `json:"type"`
-				ID      string `json:"id"` // session event
-				Message struct {
-					Usage struct {
-						Input      int `json:"input"`
-						Output     int `json:"output"`
-						CacheRead  int `json:"cacheRead"`
-						CacheWrite int `json:"cacheWrite"`
-						Cost       struct {
-							Total float64 `json:"total"`
-						} `json:"cost"`
-					} `json:"usage"`
-				} `json:"message"`
-				AssistantMessageEvent struct {
-					Type  string `json:"type"`
-					Delta string `json:"delta"`
-				} `json:"assistantMessageEvent"`
-			}
-
-			if err := json.Unmarshal([]byte(line), &event); err == nil {
-				// Extract session ID from the session header event
-				if event.Type == "session" && event.ID != "" && state.Run.SessionID == "" {
-					state.Run.SessionID = event.ID
-					config.Save(repoRoot, state)
-				}
-
-				// Accumulate token usage from message_end events
-				if event.Type == "message_end" {
-					accumulatedTokens.input += event.Message.Usage.Input
-					accumulatedTokens.output += event.Message.Usage.Output
-					accumulatedTokens.cacheRead += event.Message.Usage.CacheRead
-					accumulatedTokens.cacheWrite += event.Message.Usage.CacheWrite
-					accumulatedCost.costUSD += event.Message.Usage.Cost.Total
-					turns++
-
-					if turns >= userCfg.EffectiveMaxTurns() {
-						fmt.Printf("[%s] turn limit reached (%d turns), killing agent\n", sessionName, turns)
-						cancelRun()
-					}
-					if accumulatedTokens.output >= userCfg.EffectiveMaxOutputTokens() {
-						fmt.Printf("[%s] output token limit reached (%d tokens), killing agent\n", sessionName, accumulatedTokens.output)
-						cancelRun()
-					}
-				}
-
-				// Stream text deltas to stdout
-				if event.Type == "message_update" &&
-					event.AssistantMessageEvent.Type == "text_delta" &&
-					event.AssistantMessageEvent.Delta != "" {
-					fmt.Printf("[%s] %s", sessionName, event.AssistantMessageEvent.Delta)
-				}
-			} else {
-				// Not JSON, print as-is
-				fmt.Printf("[%s] %s\n", sessionName, line)
-			}
-		}
+		proc.Process(pipeR)
 	}()
 
-	// Run docker
-	// Forward AWS env vars for bedrock auth, and redirect pi sessions to writable temp dir.
-	// Prefer host env vars; fall back to userCfg values.
 	awsEnv := map[string]string{
 		"AWS_PROFILE":           userCfg.AWSProfile,
 		"AWS_REGION":            userCfg.AWSRegion,
@@ -643,7 +557,7 @@ func runAgentInDocker(repoRoot string, state *config.State, prompt string, agent
 		Cmd:      cmdArgs,
 		Env:      envVars,
 		EnvFile:  envFile,
-		Networks: networks,
+		Networks: []string{"sandbox-internal"},
 		Stdout:   pipeW,
 		Stderr:   pipeW,
 	}
@@ -655,13 +569,18 @@ func runAgentInDocker(repoRoot string, state *config.State, prompt string, agent
 		state.Run.ContainerID = containerID
 	}
 
-	// Update state with accumulated tokens
-	state.Run.InputTokens = accumulatedTokens.input
-	state.Run.OutputTokens = accumulatedTokens.output
-	state.Run.CacheReadTokens = accumulatedTokens.cacheRead
-	state.Run.CacheWriteTokens = accumulatedTokens.cacheWrite
-	state.Run.CostUSD = accumulatedCost.costUSD
+	stats := proc.Stats()
+	if stats.SessionID != "" {
+		state.Run.SessionID = stats.SessionID
+	}
+	state.Run.InputTokens = stats.InputTokens
+	state.Run.OutputTokens = stats.OutputTokens
+	state.Run.CacheReadTokens = stats.CacheReadTokens
+	state.Run.CacheWriteTokens = stats.CacheWriteTokens
+	state.Run.CostUSD = stats.CostUSD
 	config.Save(repoRoot, state)
+
+	emitter.Close()
 
 	if err != nil {
 		return exitCode, fmt.Errorf("docker run: %w", err)
@@ -703,7 +622,7 @@ func agentEnvFilePath() string {
 }
 
 // cmdRerun runs the agent again in an existing worktree with a new prompt.
-func cmdRerun(name, prompt, promptFile, profileFile string) error {
+func cmdRerun(name, prompt, promptFile, profileFile, output, callback string) error {
 	repoRoot, err := resolveRepoRoot()
 	if err != nil {
 		return err
@@ -772,7 +691,7 @@ func cmdRerun(name, prompt, promptFile, profileFile string) error {
 	fmt.Printf("rerunning session %q with new prompt...\n", sessionName)
 
 	// Run agent again
-	exitCode, err := runAgentInDockerRerun(repoRoot, state, resolvedPrompt, agentImpl, logFile, userCfg)
+	exitCode, err := runAgentInDockerRerun(repoRoot, state, resolvedPrompt, agentImpl, logFile, userCfg, output, callback)
 	if err != nil {
 		return err
 	}
@@ -828,11 +747,10 @@ func cmdRerun(name, prompt, promptFile, profileFile string) error {
 }
 
 // runAgentInDockerRerun is similar to runAgentInDocker but appends to an existing log file.
-func runAgentInDockerRerun(repoRoot string, state *config.State, prompt string, agentImpl agent.Agent, logFile *os.File, rerunUserCfg config.UserConfig) (int, error) {
+func runAgentInDockerRerun(repoRoot string, state *config.State, prompt string, agentImpl agent.Agent, logFile *os.File, rerunUserCfg config.UserConfig, output, callback string) (int, error) {
 	sessionName := state.Name
 	wtPath := state.Run.Worktree
 
-	// Get agent args
 	cmdArgs, err := agentImpl.Args(agent.RunArgs{
 		Prompt: prompt,
 		Model:  state.Run.Model,
@@ -841,128 +759,47 @@ func runAgentInDockerRerun(repoRoot string, state *config.State, prompt string, 
 		return 1, fmt.Errorf("build command: %w", err)
 	}
 
-	// Build docker mounts
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		return 1, fmt.Errorf("get home dir: %w", err)
 	}
 
 	mounts := []docker.Mount{
-		{
-			Host:      wtPath,
-			Container: "/workspace",
-			ReadOnly:  false,
-		},
-		{
-			Host:      filepath.Join(homeDir, ".pi", "agent"),
-			Container: "/root/.pi/agent",
-			ReadOnly:  false,
-		},
+		{Host: wtPath, Container: "/workspace"},
+		{Host: filepath.Join(homeDir, ".pi", "agent"), Container: "/root/.pi/agent"},
 	}
 
-	// Add ~/.gradle/init.d if it exists
 	gradleInitD := filepath.Join(homeDir, ".gradle", "init.d")
 	if _, err := os.Stat(gradleInitD); err == nil {
-		mounts = append(mounts, docker.Mount{
-			Host:      gradleInitD,
-			Container: "/root/.gradle/init.d",
-			ReadOnly:  true,
-		})
+		mounts = append(mounts, docker.Mount{Host: gradleInitD, Container: "/root/.gradle/init.d", ReadOnly: true})
 	}
 
-	// Add ~/.aws if it exists (needed for AWS provider credentials)
 	awsDir := filepath.Join(homeDir, ".aws")
 	if _, err := os.Stat(awsDir); err == nil {
-		mounts = append(mounts, docker.Mount{
-			Host:      awsDir,
-			Container: "/root/.aws",
-			ReadOnly:  true,
-		})
+		mounts = append(mounts, docker.Mount{Host: awsDir, Container: "/root/.aws", ReadOnly: true})
 	}
 
-	// Require proxy network — fail early if proxy stack isn't running.
 	if err := requireProxyNetwork(); err != nil {
 		return 0, err
 	}
-	networks := []string{"sandbox-internal"}
 
-	// Load proxy env file from ~/.config/cerberus/agent.env.
 	envFile := agentEnvFilePath()
 
-	// Create output pipe
 	pipeR, pipeW := io.Pipe()
-
-	// Stream handler
-	var accumulatedTokens struct {
-		input      int
-		output     int
-		cacheRead  int
-		cacheWrite int
-		costUSD    float64
-	}
 
 	rerunCtx, cancelRerun := context.WithCancel(context.Background())
 	defer cancelRerun()
 
+	emitter := buildEmitter(sessionName, output, callback)
+
+	proc := stream.NewProcessor(sessionName, emitter, logFile, stream.Limits{
+		MaxTurns:        rerunUserCfg.EffectiveMaxTurns(),
+		MaxOutputTokens: rerunUserCfg.EffectiveMaxOutputTokens(),
+	}, cancelRerun)
+
 	go func() {
 		defer pipeR.Close()
-		scanner := bufio.NewScanner(pipeR)
-		scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
-		turns := 0
-		for scanner.Scan() {
-			line := scanner.Text()
-			fmt.Fprintln(logFile, line)
-
-			// Parse JSON event (pi --mode json format)
-			var event struct {
-				Type    string `json:"type"`
-				Message struct {
-					Usage struct {
-						Input      int `json:"input"`
-						Output     int `json:"output"`
-						CacheRead  int `json:"cacheRead"`
-						CacheWrite int `json:"cacheWrite"`
-						Cost       struct {
-							Total float64 `json:"total"`
-						} `json:"cost"`
-					} `json:"usage"`
-				} `json:"message"`
-				AssistantMessageEvent struct {
-					Type  string `json:"type"`
-					Delta string `json:"delta"`
-				} `json:"assistantMessageEvent"`
-			}
-
-			if err := json.Unmarshal([]byte(line), &event); err == nil {
-				// Accumulate token usage from message_end events
-				if event.Type == "message_end" {
-					accumulatedTokens.input += event.Message.Usage.Input
-					accumulatedTokens.output += event.Message.Usage.Output
-					accumulatedTokens.cacheRead += event.Message.Usage.CacheRead
-					accumulatedTokens.cacheWrite += event.Message.Usage.CacheWrite
-					accumulatedTokens.costUSD += event.Message.Usage.Cost.Total
-					turns++
-
-					if turns >= rerunUserCfg.EffectiveMaxTurns() {
-						fmt.Printf("[%s] turn limit reached (%d turns), killing agent\n", sessionName, turns)
-						cancelRerun()
-					}
-					if accumulatedTokens.output >= rerunUserCfg.EffectiveMaxOutputTokens() {
-						fmt.Printf("[%s] output token limit reached (%d tokens), killing agent\n", sessionName, accumulatedTokens.output)
-						cancelRerun()
-					}
-				}
-
-				// Stream text deltas to stdout
-				if event.Type == "message_update" &&
-					event.AssistantMessageEvent.Type == "text_delta" &&
-					event.AssistantMessageEvent.Delta != "" {
-					fmt.Printf("[%s] %s", sessionName, event.AssistantMessageEvent.Delta)
-				}
-			} else {
-				fmt.Printf("[%s] %s\n", sessionName, line)
-			}
-		}
+		proc.Process(pipeR)
 	}()
 
 	awsEnvRerun := map[string]string{
@@ -993,7 +830,7 @@ func runAgentInDockerRerun(repoRoot string, state *config.State, prompt string, 
 		Cmd:      cmdArgs,
 		Env:      envVarsRerun,
 		EnvFile:  envFile,
-		Networks: networks,
+		Networks: []string{"sandbox-internal"},
 		Stdout:   pipeW,
 		Stderr:   pipeW,
 	}
@@ -1005,13 +842,15 @@ func runAgentInDockerRerun(repoRoot string, state *config.State, prompt string, 
 		state.Run.ContainerID = containerID
 	}
 
-	// Update state with accumulated tokens
-	state.Run.InputTokens += accumulatedTokens.input
-	state.Run.OutputTokens += accumulatedTokens.output
-	state.Run.CacheReadTokens += accumulatedTokens.cacheRead
-	state.Run.CacheWriteTokens += accumulatedTokens.cacheWrite
-	state.Run.CostUSD += accumulatedTokens.costUSD
+	stats := proc.Stats()
+	state.Run.InputTokens += stats.InputTokens
+	state.Run.OutputTokens += stats.OutputTokens
+	state.Run.CacheReadTokens += stats.CacheReadTokens
+	state.Run.CacheWriteTokens += stats.CacheWriteTokens
+	state.Run.CostUSD += stats.CostUSD
 	config.Save(repoRoot, state)
+
+	emitter.Close()
 
 	if err != nil {
 		return exitCode, fmt.Errorf("docker run: %w", err)
@@ -1335,6 +1174,27 @@ func printJSONSummary(state *config.State) {
 	fmt.Println(string(data))
 }
 
+// buildEmitter constructs the appropriate event emitter based on --output and --callback flags.
+func buildEmitter(session, output, callback string) event.Emitter {
+	var emitters []event.Emitter
+
+	switch output {
+	case "jsonl":
+		emitters = append(emitters, event.NewJSONLEmitter(os.Stdout))
+	default:
+		emitters = append(emitters, event.NewTextEmitter(session))
+	}
+
+	if callback != "" {
+		emitters = append(emitters, event.NewCallbackEmitter(callback))
+	}
+
+	if len(emitters) == 1 {
+		return emitters[0]
+	}
+	return event.NewMultiEmitter(emitters...)
+}
+
 func truncate(s string, max int) string {
 	if len(s) <= max {
 		return s
@@ -1369,11 +1229,8 @@ func buildInteractiveEnvVars(userCfg config.UserConfig) []string {
 }
 
 // runTurnViaExec runs a single agent turn inside an already-running container via docker exec.
-// It streams output to stdout, accumulates token usage into state, and saves state on completion.
-// On success the pi session ID is captured and written to state for use in subsequent turns.
-func runTurnViaExec(repoRoot string, state *config.State, prompt string, userCfg config.UserConfig) (int, error) {
-	sessionName := state.Name
-
+// It streams output through the emitter, accumulates token usage into state, and saves state.
+func runTurnViaExec(repoRoot string, state *config.State, prompt string, userCfg config.UserConfig, emitter event.Emitter) (int, error) {
 	agentImpl, err := agent.Get(state.Run.Agent)
 	if err != nil {
 		return 1, err
@@ -1401,105 +1258,35 @@ func runTurnViaExec(repoRoot string, state *config.State, prompt string, userCfg
 
 	pipeR, pipeW := io.Pipe()
 
-	var (
-		inputTokens      int
-		outputTokens     int
-		cacheReadTokens  int
-		cacheWriteTokens int
-		costUSD          float64
-	)
-
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+
+	proc := stream.NewProcessor(state.Name, emitter, logFile, stream.Limits{
+		MaxTurns:        userCfg.EffectiveMaxTurns(),
+		MaxOutputTokens: userCfg.EffectiveMaxOutputTokens(),
+	}, cancel)
 
 	var wg sync.WaitGroup
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
 		defer pipeR.Close()
-
-		scanner := bufio.NewScanner(pipeR)
-		scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
-		turns := 0
-		atLineStart := true
-
-		for scanner.Scan() {
-			line := scanner.Text()
-			fmt.Fprintln(logFile, line)
-
-			var event struct {
-				Type    string `json:"type"`
-				ID      string `json:"id"`
-				Message struct {
-					Usage struct {
-						Input      int `json:"input"`
-						Output     int `json:"output"`
-						CacheRead  int `json:"cacheRead"`
-						CacheWrite int `json:"cacheWrite"`
-						Cost       struct {
-							Total float64 `json:"total"`
-						} `json:"cost"`
-					} `json:"usage"`
-				} `json:"message"`
-				AssistantMessageEvent struct {
-					Type  string `json:"type"`
-					Delta string `json:"delta"`
-				} `json:"assistantMessageEvent"`
-			}
-
-			if err := json.Unmarshal([]byte(line), &event); err == nil {
-				if event.Type == "session" && event.ID != "" && state.Run.SessionID == "" {
-					state.Run.SessionID = event.ID
-					config.Save(repoRoot, state)
-				}
-
-				if event.Type == "message_end" {
-					inputTokens += event.Message.Usage.Input
-					outputTokens += event.Message.Usage.Output
-					cacheReadTokens += event.Message.Usage.CacheRead
-					cacheWriteTokens += event.Message.Usage.CacheWrite
-					costUSD += event.Message.Usage.Cost.Total
-					turns++
-
-					if turns >= userCfg.EffectiveMaxTurns() {
-						fmt.Printf("[%s] turn limit reached (%d turns), killing agent\n", sessionName, turns)
-						cancel()
-					}
-					if outputTokens >= userCfg.EffectiveMaxOutputTokens() {
-						fmt.Printf("[%s] output token limit reached (%d tokens), killing agent\n", sessionName, outputTokens)
-						cancel()
-					}
-				}
-
-				if event.Type == "message_update" &&
-					event.AssistantMessageEvent.Type == "text_delta" &&
-					event.AssistantMessageEvent.Delta != "" {
-					delta := event.AssistantMessageEvent.Delta
-					if atLineStart {
-						fmt.Printf("[%s] ", sessionName)
-					}
-					fmt.Print(delta)
-					atLineStart = len(delta) > 0 && delta[len(delta)-1] == '\n'
-				}
-			} else {
-				fmt.Printf("[%s] %s\n", sessionName, line)
-				atLineStart = true
-			}
-		}
-		if !atLineStart {
-			fmt.Println()
-		}
+		proc.Process(pipeR)
 	}()
 
 	exitCode, err := docker.Exec(ctx, state.Run.ContainerID, cmdArgs, envVars, pipeW, pipeW)
 	pipeW.Close()
 	wg.Wait()
 
-	state.Run.InputTokens += inputTokens
-	state.Run.OutputTokens += outputTokens
-	state.Run.CacheReadTokens += cacheReadTokens
-	state.Run.CacheWriteTokens += cacheWriteTokens
-	state.Run.CostUSD += costUSD
+	stats := proc.Stats()
+	if stats.SessionID != "" && state.Run.SessionID == "" {
+		state.Run.SessionID = stats.SessionID
+	}
+	state.Run.InputTokens += stats.InputTokens
+	state.Run.OutputTokens += stats.OutputTokens
+	state.Run.CacheReadTokens += stats.CacheReadTokens
+	state.Run.CacheWriteTokens += stats.CacheWriteTokens
+	state.Run.CostUSD += stats.CostUSD
 	config.Save(repoRoot, state)
 
 	if err != nil {
@@ -1511,12 +1298,13 @@ func runTurnViaExec(repoRoot string, state *config.State, prompt string, userCfg
 
 func cmdChatCommand() *cobra.Command {
 	var name, prompt, promptFile, agentFlag, modelFlag, imageFlag, profileFile string
+	var outputFlag, callbackFlag string
 
 	cmd := &cobra.Command{
 		Use:   "chat",
 		Short: "Start an interactive session with a long-lived container",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return cmdChat(name, prompt, promptFile, agentFlag, modelFlag, imageFlag, profileFile)
+			return cmdChat(name, prompt, promptFile, agentFlag, modelFlag, imageFlag, profileFile, outputFlag, callbackFlag)
 		},
 	}
 
@@ -1527,23 +1315,28 @@ func cmdChatCommand() *cobra.Command {
 	cmd.Flags().StringVar(&modelFlag, "model", "", "model to use (default from config or agent)")
 	cmd.Flags().StringVar(&imageFlag, "image", "", "docker image (default from config)")
 	cmd.Flags().StringVar(&profileFile, "profile-file", "", "path to a profile JSON file to override model, image, and env vars")
+	cmd.Flags().StringVar(&outputFlag, "output", "text", "output format: text (default) or jsonl")
+	cmd.Flags().StringVar(&callbackFlag, "callback", "", "URL to POST events to as they happen")
 
 	return cmd
 }
 
 func cmdMessageCommand() *cobra.Command {
 	var name, message string
+	var outputFlag, callbackFlag string
 
 	cmd := &cobra.Command{
 		Use:   "message",
 		Short: "Send a follow-up message to a waiting interactive session",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return cmdMessage(name, message)
+			return cmdMessage(name, message, outputFlag, callbackFlag)
 		},
 	}
 
 	cmd.Flags().StringVar(&name, "name", "", "session name (required if multiple sessions exist)")
 	cmd.Flags().StringVar(&message, "message", "", "message to send to the agent (required)")
+	cmd.Flags().StringVar(&outputFlag, "output", "text", "output format: text (default) or jsonl")
+	cmd.Flags().StringVar(&callbackFlag, "callback", "", "URL to POST events to as they happen")
 
 	cmd.RegisterFlagCompletionFunc("name", completionSessions)
 
@@ -1573,7 +1366,7 @@ func cmdCloseCommand() *cobra.Command {
 }
 
 // cmdChat creates a worktree and a long-lived container, then runs the first agent turn.
-func cmdChat(sessionName, prompt, promptFile, agentFlag, modelFlag, imageFlag, profileFile string) error {
+func cmdChat(sessionName, prompt, promptFile, agentFlag, modelFlag, imageFlag, profileFile, output, callback string) error {
 	userCfg, err := config.LoadUserConfig()
 	if err != nil {
 		return err
@@ -1734,7 +1527,10 @@ func cmdChat(sessionName, prompt, promptFile, agentFlag, modelFlag, imageFlag, p
 		return fmt.Errorf("save state: %w", err)
 	}
 
-	exitCode, err := runTurnViaExec(repoRoot, state, resolvedPrompt, userCfg)
+	emitter := buildEmitter(sessionName, output, callback)
+	defer emitter.Close()
+
+	exitCode, err := runTurnViaExec(repoRoot, state, resolvedPrompt, userCfg, emitter)
 	if err != nil {
 		state.Run.Status = config.StatusFailed
 		config.Save(repoRoot, state)
@@ -1753,12 +1549,16 @@ func cmdChat(sessionName, prompt, promptFile, agentFlag, modelFlag, imageFlag, p
 		return fmt.Errorf("save state: %w", err)
 	}
 
+	e := event.New(event.TurnComplete, sessionName)
+	e.Status = "waiting"
+	emitter.Emit(e)
+
 	fmt.Printf("\n[%s] waiting for next message — use 'cerberus message --name %s'\n", sessionName, sessionName)
 	return nil
 }
 
 // cmdMessage sends a follow-up message to a waiting interactive session.
-func cmdMessage(name, message string) error {
+func cmdMessage(name, message, output, callback string) error {
 	if message == "" {
 		return fmt.Errorf("--message is required")
 	}
@@ -1799,12 +1599,15 @@ func cmdMessage(name, message string) error {
 		config.ApplyProfile(&userCfg, p)
 	}
 
+	emitter := buildEmitter(sessionName, output, callback)
+	defer emitter.Close()
+
 	state.Run.Status = config.StatusRunning
 	if err := config.Save(repoRoot, state); err != nil {
 		return fmt.Errorf("save state: %w", err)
 	}
 
-	exitCode, err := runTurnViaExec(repoRoot, state, message, userCfg)
+	exitCode, err := runTurnViaExec(repoRoot, state, message, userCfg, emitter)
 	if err != nil {
 		state.Run.Status = config.StatusFailed
 		config.Save(repoRoot, state)
@@ -1822,6 +1625,10 @@ func cmdMessage(name, message string) error {
 	if err := config.Save(repoRoot, state); err != nil {
 		return fmt.Errorf("save state: %w", err)
 	}
+
+	e := event.New(event.TurnComplete, sessionName)
+	e.Status = "waiting"
+	emitter.Emit(e)
 
 	fmt.Printf("\n[%s] waiting — use 'cerberus message' or 'cerberus close' to finish\n", sessionName)
 	return nil
