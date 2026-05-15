@@ -373,3 +373,9 @@ type Agent interface {
 ## License
 
 Experimental. Use at your own risk.
+
+## Future improvements
+
+- **Inline profile flag (`--profile-json`)**: accept profile overrides as a JSON string directly on the command line instead of requiring a file path via `--profile-file`. Callers that manage profiles in a database (e.g. foundry) currently have to write a temp file before each session and delete it after, purely because cerberus requires a path. An inline flag would eliminate that round-trip entirely.
+
+- **`--system-prompt` flag on `chat`**: allow callers to inject a system prompt override when starting an interactive session, without prepending it to the user-visible first message.

@@ -2,6 +2,7 @@ networks:
   sandbox-internal:
     name: sandbox-internal
     external: true
+  default: {}
 
 volumes:
   ollama:
@@ -13,7 +14,12 @@ services:
     container_name: ollama
     volumes:
       - ollama:/root/.ollama
+    environment:
+      - OLLAMA_HOST=0.0.0.0
+    ports:
+      - "11434:11434"
     networks:
+      - default
       - sandbox-internal
     restart: unless-stopped
     deploy:
