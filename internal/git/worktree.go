@@ -108,6 +108,20 @@ func Diff(worktreePath, baseCommit string) (string, error) {
 	return out, nil
 }
 
+// StageAndDiff stages all changes (including untracked files) and returns the
+// full diff against baseCommit. Use this before generating a commit message so
+// that newly created files are included in the diff, not silently dropped.
+func StageAndDiff(worktreePath, baseCommit string) (string, error) {
+	if _, err := run(worktreePath, "git", "add", "-A"); err != nil {
+		return "", fmt.Errorf("stage changes in %s: %w", worktreePath, err)
+	}
+	out, err := run(worktreePath, "git", "diff", "--cached", baseCommit)
+	if err != nil {
+		return "", fmt.Errorf("staged diff in %s: %w", worktreePath, err)
+	}
+	return out, nil
+}
+
 // CommittedDiff returns the unified diff of all commits in the worktree on top
 // of baseCommit (i.e. committed changes only, not the working tree).
 func CommittedDiff(worktreePath, baseCommit string) (string, error) {

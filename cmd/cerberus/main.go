@@ -551,7 +551,7 @@ func cmdStart(sessionName, prompt, promptFile, agentFlag, modelFlag, imageFlag, 
 	// Ask for commit message and commit
 	fmt.Printf("[%s] committing...\n", sessionName)
 
-	diff, err := git.Diff(wtPath, baseCommit)
+	diff, err := git.StageAndDiff(wtPath, baseCommit)
 	if err != nil {
 		diff = ""
 	}
@@ -951,7 +951,7 @@ func cmdRerun(name, prompt, promptFile, profileFile, output, callback, invoker s
 	// Commit changes
 	fmt.Printf("[%s] committing...\n", sessionName)
 
-	diff, _ := git.Diff(state.Run.Worktree, state.BaseCommit)
+	diff, _ := git.StageAndDiff(state.Run.Worktree, state.BaseCommit)
 	commitMsg := agent.AskForCommitMessage(state.Run.Worktree, diff, state.Run.Model)
 	commitHash, err := git.CommitAndGetHash(state.Run.Worktree, commitMsg)
 	if err != nil {
@@ -1928,7 +1928,7 @@ func cmdClose(repoRoot, name string) error {
 	if hasChanges {
 		fmt.Printf("[%s] committing...\n", sessionName)
 
-		diff, _ := git.Diff(state.Run.Worktree, state.BaseCommit)
+		diff, _ := git.StageAndDiff(state.Run.Worktree, state.BaseCommit)
 		commitMsg := agent.AskForCommitMessage(state.Run.Worktree, diff, state.Run.Model)
 		commitHash, err := git.CommitAndGetHash(state.Run.Worktree, commitMsg)
 		if err != nil {
