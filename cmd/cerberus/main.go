@@ -58,13 +58,13 @@ func main() {
 
 func cmdStartCommand() *cobra.Command {
 	var name, prompt, promptFile, agentFlag, modelFlag, imageFlag, profileFile string
-	var outputFlag, callbackFlag string
+	var outputFlag, callbackFlag, invokerFlag string
 
 	cmd := &cobra.Command{
 		Use:   "start",
 		Short: "Start a single agent run in an isolated worktree",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return cmdStart(name, prompt, promptFile, agentFlag, modelFlag, imageFlag, profileFile, outputFlag, callbackFlag)
+			return cmdStart(name, prompt, promptFile, agentFlag, modelFlag, imageFlag, profileFile, outputFlag, callbackFlag, invokerFlag)
 		},
 	}
 
@@ -77,6 +77,7 @@ func cmdStartCommand() *cobra.Command {
 	cmd.Flags().StringVar(&profileFile, "profile-file", "", "path to a profile JSON file to override model, image, and env vars")
 	cmd.Flags().StringVar(&outputFlag, "output", "text", "output format: text (default) or jsonl")
 	cmd.Flags().StringVar(&callbackFlag, "callback", "", "URL to POST events to as they happen")
+	cmd.Flags().StringVar(&invokerFlag, "invoker", "cli", "invoker identifier for stats tracking")
 
 	cmd.RegisterFlagCompletionFunc("name", completionSessions)
 
@@ -85,13 +86,13 @@ func cmdStartCommand() *cobra.Command {
 
 func cmdRerunCommand() *cobra.Command {
 	var name, prompt, promptFile, profileFile string
-	var outputFlag, callbackFlag string
+	var outputFlag, callbackFlag, invokerFlag string
 
 	cmd := &cobra.Command{
 		Use:   "rerun",
 		Short: "Run the agent again in an existing session worktree",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return cmdRerun(name, prompt, promptFile, profileFile, outputFlag, callbackFlag)
+			return cmdRerun(name, prompt, promptFile, profileFile, outputFlag, callbackFlag, invokerFlag)
 		},
 	}
 
@@ -101,6 +102,7 @@ func cmdRerunCommand() *cobra.Command {
 	cmd.Flags().StringVar(&profileFile, "profile-file", "", "path to a profile JSON file to override model, image, and env vars (overrides stored profile)")
 	cmd.Flags().StringVar(&outputFlag, "output", "text", "output format: text (default) or jsonl")
 	cmd.Flags().StringVar(&callbackFlag, "callback", "", "URL to POST events to as they happen")
+	cmd.Flags().StringVar(&invokerFlag, "invoker", "cli", "invoker identifier for stats tracking")
 
 	cmd.RegisterFlagCompletionFunc("name", completionSessions)
 
@@ -280,7 +282,7 @@ func createWorktreePath(repoRoot, wtPath, branchName, baseCommit string) (string
 
 // cmdStart creates a git worktree and runs an agent inside a docker container,
 // then commits the result.
-func cmdStart(sessionName, prompt, promptFile, agentFlag, modelFlag, imageFlag, profileFile, output, callback string) error {
+func cmdStart(sessionName, prompt, promptFile, agentFlag, modelFlag, imageFlag, profileFile, output, callback, invoker string) error {
 	userCfg, err := config.LoadUserConfig()
 	if err != nil {
 		return err
@@ -371,6 +373,11 @@ func cmdStart(sessionName, prompt, promptFile, agentFlag, modelFlag, imageFlag, 
 		return fmt.Errorf("create log dir: %w", err)
 	}
 
+	workDir, err := os.Getwd()
+	if err != nil {
+		workDir = ""
+	}
+
 	state := &config.State{
 		Name:       sessionName,
 		BaseBranch: baseBranch,
@@ -386,6 +393,8 @@ func cmdStart(sessionName, prompt, promptFile, agentFlag, modelFlag, imageFlag, 
 			Status:      config.StatusPending,
 			LogFile:     logPath,
 			StartedAt:   time.Now(),
+			WorkDir:     workDir,
+			InvokedBy:   invoker,
 		},
 	}
 
@@ -405,6 +414,7 @@ func cmdStart(sessionName, prompt, promptFile, agentFlag, modelFlag, imageFlag, 
 
 	if exitCode != 0 {
 		state.Run.Status = config.StatusFailed
+		state.Run.FailReason = fmt.Sprintf("exit code %d", exitCode)
 		state.Run.ExitCode = exitCode
 		state.Run.FinishedAt = time.Now()
 		if err := config.Save(repoRoot, state); err != nil {
@@ -622,7 +632,7 @@ func agentEnvFilePath() string {
 }
 
 // cmdRerun runs the agent again in an existing worktree with a new prompt.
-func cmdRerun(name, prompt, promptFile, profileFile, output, callback string) error {
+func cmdRerun(name, prompt, promptFile, profileFile, output, callback, invoker string) error {
 	repoRoot, err := resolveRepoRoot()
 	if err != nil {
 		return err
@@ -656,7 +666,11 @@ func cmdRerun(name, prompt, promptFile, profileFile, output, callback string) er
 		return fmt.Errorf("--prompt or --prompt-file is required")
 	}
 
-	// Get agent
+	// Store invoker if provided
+	if invoker != "" && invoker != "cli" {
+		state.Run.InvokedBy = invoker
+		config.Save(repoRoot, state)
+	}
 	agentImpl, err := agent.Get(state.Run.Agent)
 	if err != nil {
 		return err
@@ -698,6 +712,7 @@ func cmdRerun(name, prompt, promptFile, profileFile, output, callback string) er
 
 	if exitCode != 0 {
 		state.Run.Status = config.StatusFailed
+		state.Run.FailReason = fmt.Sprintf("exit code %d", exitCode)
 		state.Run.ExitCode = exitCode
 		state.Run.FinishedAt = time.Now()
 		config.Save(repoRoot, state)
@@ -1095,10 +1110,10 @@ func cmdStats() error {
 		return nil
 	}
 
-	// Print flat per-session table
-	fmt.Printf("%-20s  %-16s  %-15s  %8s  %10s  %8s  %8s  %10s\n",
-		"Session", "Date", "Model/Agent", "Status", "Duration", "Input", "Output", "Cost")
-	fmt.Println(strings.Repeat("-", 100))
+	// Print flat per-session table with new columns
+	fmt.Printf("%-20s  %-16s  %-10s  %-11s  %-20s  %-20s  %-15s  %8s  %10s\n",
+		"Session", "Date", "Invoker", "Mode", "Status", "WorkDir", "Model", "Duration", "Cost")
+	fmt.Println(strings.Repeat("-", 147))
 
 	// Reverse records to show most recent first, cap at 20
 	var displayRecords []config.StatsRecord
@@ -1109,6 +1124,29 @@ func cmdStats() error {
 	for _, rec := range displayRecords {
 		sessionDate := rec.SessionDate.Format("2006-01-02 15:04")
 		sessionName := truncate(rec.SessionName, 20)
+		invoker := rec.InvokedBy
+		if invoker == "" {
+			invoker = "cli"
+		}
+		invoker = truncate(invoker, 10)
+
+		mode := "oneshot"
+		if rec.Interactive {
+			mode = "interactive"
+		}
+
+		status := rec.Status
+		if rec.FailReason != "" {
+			status = "failed: " + truncate(rec.FailReason, 11)
+		}
+		status = truncate(status, 20)
+
+		workDir := rec.WorkDir
+		if workDir == "" {
+			workDir = "-"
+		}
+		workDir = truncate(workDir, 20)
+
 		modelAgent := rec.Model
 		if modelAgent == "" {
 			modelAgent = "(default)"
@@ -1125,8 +1163,8 @@ func cmdStats() error {
 			costStr = fmt.Sprintf("$%.4f", rec.CostUSD)
 		}
 
-		fmt.Printf("%-20s  %-16s  %-15s  %8s  %10s  %8d  %8d  %10s\n",
-			sessionName, sessionDate, modelAgent, rec.Status, durationStr, rec.InputTokens, rec.OutputTokens, costStr)
+		fmt.Printf("%-20s  %-16s  %-10s  %-11s  %-20s  %-20s  %-15s  %8s  %10s\n",
+			sessionName, sessionDate, invoker, mode, status, workDir, modelAgent, durationStr, costStr)
 	}
 
 	fmt.Printf("\n%d session(s) recorded\n", len(records))
@@ -1141,6 +1179,12 @@ func appendStats(state *config.State) error {
 		duration = r.FinishedAt.Sub(r.StartedAt).Seconds()
 	}
 
+	// Determine working directory basename
+	workDirBasename := r.WorkDir
+	if workDirBasename != "" {
+		workDirBasename = filepath.Base(workDirBasename)
+	}
+
 	rec := config.StatsRecord{
 		SessionDate:      time.Now(),
 		SessionName:      state.Name,
@@ -1149,12 +1193,16 @@ func appendStats(state *config.State) error {
 		Model:            r.Model,
 		Image:            r.Image,
 		Status:           string(r.Status),
+		FailReason:       r.FailReason,
 		DurationS:        duration,
 		InputTokens:      r.InputTokens,
 		OutputTokens:     r.OutputTokens,
 		CacheReadTokens:  r.CacheReadTokens,
 		CacheWriteTokens: r.CacheWriteTokens,
 		CostUSD:          r.CostUSD,
+		WorkDir:          workDirBasename,
+		InvokedBy:        r.InvokedBy,
+		Interactive:      r.Interactive,
 	}
 
 	return config.AppendStats(rec)

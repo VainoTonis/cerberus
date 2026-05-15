@@ -134,6 +134,7 @@ type Run struct {
 	PID              int       `json:"pid,omitempty"`
 	LogFile          string    `json:"log_file,omitempty"`
 	ExitCode         int       `json:"exit_code,omitempty"`
+	FailReason       string    `json:"fail_reason,omitempty"`
 	SessionID        string    `json:"session_id,omitempty"`
 	CommitHash       string    `json:"commit_hash,omitempty"`
 	StartedAt        time.Time `json:"started_at,omitempty"`
@@ -143,6 +144,8 @@ type Run struct {
 	CacheReadTokens  int       `json:"cache_read_tokens,omitempty"`
 	CacheWriteTokens int       `json:"cache_write_tokens,omitempty"`
 	CostUSD          float64   `json:"cost_usd,omitempty"`
+	WorkDir          string    `json:"work_dir,omitempty"`
+	InvokedBy        string    `json:"invoked_by,omitempty"`
 }
 
 type State struct {
@@ -252,12 +255,16 @@ type StatsRecord struct {
 	Model            string    `json:"model"`
 	Image            string    `json:"image"`
 	Status           string    `json:"status"`
+	FailReason       string    `json:"fail_reason,omitempty"`
 	DurationS        float64   `json:"duration_s,omitempty"`
 	InputTokens      int       `json:"input_tokens,omitempty"`
 	OutputTokens     int       `json:"output_tokens,omitempty"`
 	CacheReadTokens  int       `json:"cache_read_tokens,omitempty"`
 	CacheWriteTokens int       `json:"cache_write_tokens,omitempty"`
 	CostUSD          float64   `json:"cost_usd,omitempty"`
+	WorkDir          string    `json:"work_dir,omitempty"`
+	InvokedBy        string    `json:"invoked_by,omitempty"`
+	Interactive      bool      `json:"interactive,omitempty"`
 }
 
 func statsPath() (string, error) {
