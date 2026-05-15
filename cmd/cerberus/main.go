@@ -48,6 +48,7 @@ func main() {
 		cmdReviewCommand(),
 		cmdCleanCommand(),
 		cmdStatsCommand(),
+		cmdPsCommand(),
 		cmdVersionCommand(),
 	)
 
@@ -209,6 +210,106 @@ func cmdVersionCommand() *cobra.Command {
 		Short: "Print the build version",
 		Run: func(cmd *cobra.Command, args []string) {
 			fmt.Println(version)
+		},
+	}
+
+	return cmd
+}
+
+// relativeTime formats a time as a relative duration like "5m ago" or "2h ago".
+func relativeTime(t time.Time) string {
+	if t.IsZero() {
+		return "-"
+	}
+	duration := time.Since(t)
+	if duration < 0 {
+		duration = -duration
+	}
+
+	switch {
+	case duration < time.Minute:
+		return fmt.Sprintf("%ds ago", int(duration.Seconds()))
+	case duration < time.Hour:
+		return fmt.Sprintf("%dm ago", int(duration.Minutes()))
+	case duration < 24*time.Hour:
+		return fmt.Sprintf("%dh ago", int(duration.Hours()))
+	default:
+		return fmt.Sprintf("%dd ago", int(duration.Hours()/24))
+	}
+}
+
+// cmdPs lists all sessions in a table format.
+func cmdPs() error {
+	repoRoot, err := resolveRepoRoot()
+	if err != nil {
+		return err
+	}
+
+	sessions, err := config.ListSessions(repoRoot)
+	if err != nil {
+		return err
+	}
+
+	if len(sessions) == 0 {
+		fmt.Println("no sessions")
+		return nil
+	}
+
+	// Print table header
+	fmt.Printf("%-20s  %-10s  %-15s  %-10s  %-12s  %s\n",
+		"NAME", "STATUS", "MODEL", "AGENT", "STARTED_AT", "ORPHANED")
+	fmt.Println(strings.Repeat("-", 94))
+
+	// Load and display each session
+	for _, sessionName := range sessions {
+		state, err := config.Load(repoRoot, sessionName)
+		if err != nil {
+			fmt.Printf("%-20s  error: %v\n", sessionName, err)
+			continue
+		}
+
+		r := &state.Run
+
+		// Determine if session is orphaned
+		orphanedStr := ""
+		if r.Status == config.StatusRunning || r.Status == config.StatusWaiting {
+			// Check if container is actually running
+			if r.Interactive {
+				// For interactive sessions, check container status
+				if r.ContainerID != "" && !docker.IsContainerRunning(r.ContainerID) {
+					orphanedStr = "[orphaned]"
+				}
+			} else {
+				// For one-shot sessions, if stuck in running status, mark as orphaned
+				if r.Status == config.StatusRunning {
+					orphanedStr = "[orphaned]"
+				}
+			}
+		}
+
+		name := truncate(sessionName, 20)
+		modelStr := truncate(r.Model, 15)
+		agent := truncate(r.Agent, 10)
+		relTime := relativeTime(r.StartedAt)
+
+		status := string(r.Status)
+		if orphanedStr != "" {
+			status = status + " " + orphanedStr
+		}
+
+		fmt.Printf("%-20s  %-10s  %-15s  %-10s  %-12s  %s\n",
+			name, status, modelStr, agent, relTime, orphanedStr)
+	}
+
+	return nil
+}
+
+func cmdPsCommand() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "ps",
+		Short: "List all sessions",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return cmdPs()
 		},
 	}
 

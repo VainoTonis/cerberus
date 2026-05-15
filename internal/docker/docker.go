@@ -224,3 +224,23 @@ func Stop(containerID string) error {
 
 	return nil
 }
+
+// IsContainerRunning checks if a docker container is actually running.
+// Returns true only if docker inspect reports the container is running.
+// Returns false if the container doesn't exist, is stopped, or any error occurs.
+func IsContainerRunning(containerID string) bool {
+	if containerID == "" {
+		return false
+	}
+
+	cmd := exec.Command("docker", "inspect", "--format={{.State.Running}}", containerID)
+	var out strings.Builder
+	cmd.Stdout = &out
+	cmd.Stderr = io.Discard
+
+	if err := cmd.Run(); err != nil {
+		return false
+	}
+
+	return strings.TrimSpace(out.String()) == "true"
+}
