@@ -604,17 +604,17 @@ func runAgentInDocker(repoRoot string, state *config.State, prompt string, agent
 
 	mounts := []docker.Mount{
 		{Host: wtPath, Container: "/workspace"},
-		{Host: filepath.Join(homeDir, ".pi", "agent"), Container: "/root/.pi/agent"},
+		{Host: filepath.Join(homeDir, ".pi", "agent"), Container: "/home/agent/.pi/agent"},
 	}
 
 	gradleInitD := filepath.Join(homeDir, ".gradle", "init.d")
 	if _, err := os.Stat(gradleInitD); err == nil {
-		mounts = append(mounts, docker.Mount{Host: gradleInitD, Container: "/root/.gradle/init.d", ReadOnly: true})
+		mounts = append(mounts, docker.Mount{Host: gradleInitD, Container: "/home/agent/.gradle/init.d", ReadOnly: true})
 	}
 
 	awsDir := filepath.Join(homeDir, ".aws")
 	if _, err := os.Stat(awsDir); err == nil {
-		mounts = append(mounts, docker.Mount{Host: awsDir, Container: "/root/.aws", ReadOnly: true})
+		mounts = append(mounts, docker.Mount{Host: awsDir, Container: "/home/agent/.aws", ReadOnly: true})
 	}
 
 	if err := requireProxyNetwork(); err != nil {
@@ -882,17 +882,17 @@ func runAgentInDockerRerun(repoRoot string, state *config.State, prompt string, 
 
 	mounts := []docker.Mount{
 		{Host: wtPath, Container: "/workspace"},
-		{Host: filepath.Join(homeDir, ".pi", "agent"), Container: "/root/.pi/agent"},
+		{Host: filepath.Join(homeDir, ".pi", "agent"), Container: "/home/agent/.pi/agent"},
 	}
 
 	gradleInitD := filepath.Join(homeDir, ".gradle", "init.d")
 	if _, err := os.Stat(gradleInitD); err == nil {
-		mounts = append(mounts, docker.Mount{Host: gradleInitD, Container: "/root/.gradle/init.d", ReadOnly: true})
+		mounts = append(mounts, docker.Mount{Host: gradleInitD, Container: "/home/agent/.gradle/init.d", ReadOnly: true})
 	}
 
 	awsDir := filepath.Join(homeDir, ".aws")
 	if _, err := os.Stat(awsDir); err == nil {
-		mounts = append(mounts, docker.Mount{Host: awsDir, Container: "/root/.aws", ReadOnly: true})
+		mounts = append(mounts, docker.Mount{Host: awsDir, Container: "/home/agent/.aws", ReadOnly: true})
 	}
 
 	if err := requireProxyNetwork(); err != nil {
@@ -1637,18 +1637,18 @@ func cmdChat(sessionName, prompt, promptFile, agentFlag, modelFlag, imageFlag, p
 
 	mounts := []docker.Mount{
 		{Host: wtPath, Container: "/workspace"},
-		{Host: filepath.Join(homeDir, ".pi", "agent"), Container: "/root/.pi/agent"},
+		{Host: filepath.Join(homeDir, ".pi", "agent"), Container: "/home/agent/.pi/agent"},
 		{Host: piSessDir, Container: "/tmp/pi-sessions"},
 	}
 
 	gradleInitD := filepath.Join(homeDir, ".gradle", "init.d")
 	if _, err := os.Stat(gradleInitD); err == nil {
-		mounts = append(mounts, docker.Mount{Host: gradleInitD, Container: "/root/.gradle/init.d", ReadOnly: true})
+		mounts = append(mounts, docker.Mount{Host: gradleInitD, Container: "/home/agent/.gradle/init.d", ReadOnly: true})
 	}
 
 	awsDir := filepath.Join(homeDir, ".aws")
 	if _, err := os.Stat(awsDir); err == nil {
-		mounts = append(mounts, docker.Mount{Host: awsDir, Container: "/root/.aws", ReadOnly: true})
+		mounts = append(mounts, docker.Mount{Host: awsDir, Container: "/home/agent/.aws", ReadOnly: true})
 	}
 
 	envVars := buildInteractiveEnvVars(userCfg)
