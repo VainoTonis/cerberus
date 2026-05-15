@@ -990,7 +990,7 @@ func runAgentInDockerRerun(repoRoot string, state *config.State, prompt string, 
 
 	mounts := []docker.Mount{
 		{Host: wtPath, Container: "/workspace"},
-		{Host: filepath.Join(homeDir, ".pi", "agent"), Container: "/home/agent/.pi/agent"},
+		{Host: filepath.Join(homeDir, ".pi", "agent"), Container: "/home/agent/.pi/agent", ReadOnly: true},
 	}
 
 	gradleInitD := filepath.Join(homeDir, ".gradle", "init.d")
@@ -1001,6 +1001,10 @@ func runAgentInDockerRerun(repoRoot string, state *config.State, prompt string, 
 	awsDir := filepath.Join(homeDir, ".aws")
 	if _, err := os.Stat(awsDir); err == nil {
 		mounts = append(mounts, docker.Mount{Host: awsDir, Container: "/home/agent/.aws", ReadOnly: true})
+	}
+
+	if err := ensureCopilotToken(); err != nil {
+		return 0, fmt.Errorf("copilot token refresh: %w", err)
 	}
 
 	if err := requireProxyNetwork(); err != nil {
@@ -1745,7 +1749,7 @@ func cmdChat(sessionName, prompt, promptFile, agentFlag, modelFlag, imageFlag, p
 
 	mounts := []docker.Mount{
 		{Host: wtPath, Container: "/workspace"},
-		{Host: filepath.Join(homeDir, ".pi", "agent"), Container: "/home/agent/.pi/agent"},
+		{Host: filepath.Join(homeDir, ".pi", "agent"), Container: "/home/agent/.pi/agent", ReadOnly: true},
 		{Host: piSessDir, Container: "/tmp/pi-sessions"},
 	}
 
@@ -1760,6 +1764,11 @@ func cmdChat(sessionName, prompt, promptFile, agentFlag, modelFlag, imageFlag, p
 	}
 
 	envVars := buildInteractiveEnvVars(userCfg)
+
+	// Ensure Copilot token is refreshed before launching container
+	if err := ensureCopilotToken(); err != nil {
+		return fmt.Errorf("copilot token refresh: %w", err)
+	}
 
 	// Require proxy network — fail early if proxy stack isn't running.
 	if err := requireProxyNetwork(); err != nil {
