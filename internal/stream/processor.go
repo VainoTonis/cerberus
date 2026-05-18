@@ -64,9 +64,21 @@ type piEvent struct {
 		} `json:"usage"`
 	} `json:"message"`
 	AssistantMessageEvent struct {
-		Type  string `json:"type"`
-		Delta string `json:"delta"`
+		Type     string `json:"type"`
+		Delta    string `json:"delta"`
+		ToolCall struct {
+			Name      string      `json:"name"`
+			Arguments map[string]interface{} `json:"arguments"`
+		} `json:"toolCall"`
 	} `json:"assistantMessageEvent"`
+	ToolCallID string `json:"toolCallId"`
+	ToolName   string `json:"toolName"`
+	Result     struct {
+		Content []struct {
+			Text string `json:"text"`
+		} `json:"content"`
+		IsError bool `json:"isError"`
+	} `json:"result"`
 }
 
 // Process reads from r until EOF, parsing pi events and emitting structured
@@ -105,6 +117,22 @@ func (p *Processor) Process(r io.Reader) Stats {
 			ev.AssistantMessageEvent.Delta != "":
 			e := event.New(event.TextDelta, p.session)
 			e.Content = ev.AssistantMessageEvent.Delta
+			p.emitter.Emit(e)
+
+		case ev.Type == "message_update" &&
+			ev.AssistantMessageEvent.Type == "toolcall_end":
+			toolInput, _ := json.Marshal(ev.AssistantMessageEvent.ToolCall.Arguments)
+			e := event.New(event.ToolUse, p.session)
+			e.ToolName = ev.AssistantMessageEvent.ToolCall.Name
+			e.ToolInput = string(toolInput)
+			p.emitter.Emit(e)
+
+		case ev.Type == "tool_execution_end":
+			e := event.New(event.ToolResult, p.session)
+			e.ToolName = ev.ToolName
+			if len(ev.Result.Content) > 0 {
+				e.Content = ev.Result.Content[0].Text
+			}
 			p.emitter.Emit(e)
 
 		case ev.Type == "message_end":
