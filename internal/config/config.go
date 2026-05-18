@@ -328,3 +328,68 @@ func LoadStats() ([]StatsRecord, error) {
 	}
 	return records, nil
 }
+
+const RepoRegistryFile = "repos.json"
+
+func repoRegistryPath() (string, error) {
+	dir, err := os.UserConfigDir()
+	if err != nil {
+		return "", fmt.Errorf("locate config dir: %w", err)
+	}
+	return filepath.Join(dir, "cerberus", RepoRegistryFile), nil
+}
+
+// RegisterRepo adds repoRoot to the global repo registry if not already present.
+func RegisterRepo(repoRoot string) error {
+	path, err := repoRegistryPath()
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return fmt.Errorf("create registry dir: %w", err)
+	}
+	var repos []string
+	data, err := os.ReadFile(path)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("read repo registry: %w", err)
+	}
+	if len(data) > 0 {
+		if err := json.Unmarshal(data, &repos); err != nil {
+			return fmt.Errorf("parse repo registry: %w", err)
+		}
+	}
+	for _, r := range repos {
+		if r == repoRoot {
+			return nil
+		}
+	}
+	repos = append(repos, repoRoot)
+	out, err := json.MarshalIndent(repos, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal repo registry: %w", err)
+	}
+	if err := os.WriteFile(path, out, 0o644); err != nil {
+		return fmt.Errorf("write repo registry: %w", err)
+	}
+	return nil
+}
+
+// LoadRepoRegistry returns all repo roots from ~/.config/cerberus/repos.json.
+func LoadRepoRegistry() ([]string, error) {
+	path, err := repoRegistryPath()
+	if err != nil {
+		return nil, err
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("read repo registry: %w", err)
+	}
+	var repos []string
+	if err := json.Unmarshal(data, &repos); err != nil {
+		return nil, fmt.Errorf("parse repo registry: %w", err)
+	}
+	return repos, nil
+}

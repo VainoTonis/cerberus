@@ -240,55 +240,76 @@ func relativeTime(t time.Time) string {
 }
 
 // cmdPs lists all sessions in a table format.
+type psEntry struct {
+	repo        string
+	sessionName string
+	state       *config.State
+	loadErr     error
+}
+
 func cmdPs() error {
-	repoRoot, err := resolveRepoRoot()
-	if err != nil {
-		return err
+	// Collect repos to scan: registry + current repo (if resolvable).
+	seen := map[string]bool{}
+	var repos []string
+
+	registered, _ := config.LoadRepoRegistry()
+	for _, r := range registered {
+		if !seen[r] {
+			seen[r] = true
+			repos = append(repos, r)
+		}
+	}
+	if cur, err := resolveRepoRoot(); err == nil {
+		if !seen[cur] {
+			seen[cur] = true
+			repos = append(repos, cur)
+		}
 	}
 
-	sessions, err := config.ListSessions(repoRoot)
-	if err != nil {
-		return err
+	var entries []psEntry
+	for _, repo := range repos {
+		sessions, err := config.ListSessions(repo)
+		if err != nil {
+			continue
+		}
+		for _, sessionName := range sessions {
+			state, err := config.Load(repo, sessionName)
+			entries = append(entries, psEntry{repo: repo, sessionName: sessionName, state: state, loadErr: err})
+		}
 	}
 
-	if len(sessions) == 0 {
+	if len(entries) == 0 {
 		fmt.Println("no sessions")
 		return nil
 	}
 
 	// Print table header
-	fmt.Printf("%-20s  %-22s  %-15s  %-10s  %-12s\n",
-		"NAME", "STATUS", "MODEL", "AGENT", "STARTED")
-	fmt.Println(strings.Repeat("-", 87))
+	fmt.Printf("%-20s  %-22s  %-15s  %-10s  %-12s  %s\n",
+		"NAME", "STATUS", "MODEL", "AGENT", "STARTED", "REPO")
+	fmt.Println(strings.Repeat("-", 100))
 
-	// Load and display each session
-	for _, sessionName := range sessions {
-		state, err := config.Load(repoRoot, sessionName)
-		if err != nil {
-			fmt.Printf("%-20s  error: %v\n", sessionName, err)
+	for _, e := range entries {
+		if e.loadErr != nil {
+			fmt.Printf("%-20s  error: %v\n", e.sessionName, e.loadErr)
 			continue
 		}
 
-		r := &state.Run
+		r := &e.state.Run
 
-		// Determine if session is orphaned
 		orphanedStr := ""
 		if r.Status == config.StatusRunning || r.Status == config.StatusWaiting {
-			// Check if container is actually running
 			if r.Interactive {
-				// For interactive sessions, check container status
 				if r.ContainerID != "" && !docker.IsContainerRunning(r.ContainerID) {
 					orphanedStr = "[orphaned]"
 				}
 			} else {
-				// For one-shot sessions, if stuck in running status, mark as orphaned
 				if r.Status == config.StatusRunning {
 					orphanedStr = "[orphaned]"
 				}
 			}
 		}
 
-		name := truncate(sessionName, 20)
+		name := truncate(e.sessionName, 20)
 		modelStr := truncate(r.Model, 15)
 		agent := truncate(r.Agent, 10)
 		relTime := relativeTime(r.StartedAt)
@@ -298,8 +319,8 @@ func cmdPs() error {
 			status = status + " " + orphanedStr
 		}
 
-		fmt.Printf("%-20s  %-22s  %-15s  %-10s  %-12s\n",
-			name, status, modelStr, agent, relTime)
+		fmt.Printf("%-20s  %-22s  %-15s  %-10s  %-12s  %s\n",
+			name, status, modelStr, agent, relTime, e.repo)
 	}
 
 	return nil
@@ -503,6 +524,9 @@ func cmdStart(sessionName, prompt, promptFile, agentFlag, modelFlag, imageFlag, 
 	if err := config.Save(repoRoot, state); err != nil {
 		return fmt.Errorf("save state: %w", err)
 	}
+	if err := config.RegisterRepo(repoRoot); err != nil {
+		fmt.Fprintf(os.Stderr, "warn: register repo: %v\n", err)
+	}
 
 	fmt.Printf("session: %s\n", sessionName)
 	fmt.Printf("branch:  %s (%s)\n", baseBranch, baseCommit[:8])
@@ -605,7 +629,7 @@ func runAgentInDocker(repoRoot string, state *config.State, prompt string, agent
 
 	mounts := []docker.Mount{
 		{Host: wtPath, Container: "/workspace"},
-		{Host: filepath.Join(homeDir, ".pi", "agent"), Container: "/home/agent/.pi/agent", ReadOnly: true},
+		{Host: filepath.Join(homeDir, ".pi", "agent"), Container: "/home/agent/.pi/agent"},
 	}
 
 	gradleInitD := filepath.Join(homeDir, ".gradle", "init.d")
@@ -990,7 +1014,7 @@ func runAgentInDockerRerun(repoRoot string, state *config.State, prompt string, 
 
 	mounts := []docker.Mount{
 		{Host: wtPath, Container: "/workspace"},
-		{Host: filepath.Join(homeDir, ".pi", "agent"), Container: "/home/agent/.pi/agent", ReadOnly: true},
+		{Host: filepath.Join(homeDir, ".pi", "agent"), Container: "/home/agent/.pi/agent"},
 	}
 
 	gradleInitD := filepath.Join(homeDir, ".gradle", "init.d")
@@ -1736,6 +1760,9 @@ func cmdChat(sessionName, prompt, promptFile, agentFlag, modelFlag, imageFlag, p
 	if err := config.Save(repoRoot, state); err != nil {
 		return fmt.Errorf("save state: %w", err)
 	}
+	if err := config.RegisterRepo(repoRoot); err != nil {
+		fmt.Fprintf(os.Stderr, "warn: register repo: %v\n", err)
+	}
 
 	fmt.Printf("session: %s\n", sessionName)
 	fmt.Printf("branch:  %s (%s)\n", baseBranch, baseCommit[:8])
@@ -1749,7 +1776,7 @@ func cmdChat(sessionName, prompt, promptFile, agentFlag, modelFlag, imageFlag, p
 
 	mounts := []docker.Mount{
 		{Host: wtPath, Container: "/workspace"},
-		{Host: filepath.Join(homeDir, ".pi", "agent"), Container: "/home/agent/.pi/agent", ReadOnly: true},
+		{Host: filepath.Join(homeDir, ".pi", "agent"), Container: "/home/agent/.pi/agent"},
 		{Host: piSessDir, Container: "/tmp/pi-sessions"},
 	}
 
