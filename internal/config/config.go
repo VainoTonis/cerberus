@@ -1,6 +1,8 @@
 package config
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,7 +12,6 @@ import (
 )
 
 const (
-	StateDir   = ".cerberus"
 	StateFile  = "state.json"
 	ConfigFile = "config.json"
 )
@@ -89,14 +90,37 @@ func (c UserConfig) EffectiveMaxOutputTokens() int {
 	return DefaultMaxOutputTokens
 }
 
-// LoadUserConfig reads ~/.config/cerberus/config.json.
+// CerberusHome returns the path to ~/.cerberus directory.
+func CerberusHome() (string, error) {
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("locate home dir: %w", err)
+	}
+	return filepath.Join(homeDir, ".cerberus"), nil
+}
+
+// RepoStateDir computes the state directory for a repository.
+// It returns ~/.cerberus/repos/<basename>-<hash6> where hash6 is the first 6 hex chars
+// of the SHA256 hash of the repoRoot path.
+func RepoStateDir(repoRoot string) (string, error) {
+	home, err := CerberusHome()
+	if err != nil {
+		return "", err
+	}
+	basename := filepath.Base(repoRoot)
+	hash := sha256.Sum256([]byte(repoRoot))
+	hash6 := hex.EncodeToString(hash[:])[0:6]
+	return filepath.Join(home, "repos", basename+"-"+hash6), nil
+}
+
+// LoadUserConfig reads ~/.cerberus/config.json.
 // If the file does not exist an empty UserConfig is returned without error.
 func LoadUserConfig() (UserConfig, error) {
-	dir, err := os.UserConfigDir()
+	home, err := CerberusHome()
 	if err != nil {
-		return UserConfig{}, fmt.Errorf("locate config dir: %w", err)
+		return UserConfig{}, err
 	}
-	path := filepath.Join(dir, "cerberus", ConfigFile)
+	path := filepath.Join(home, ConfigFile)
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -157,29 +181,49 @@ type State struct {
 }
 
 // sessionDir returns the directory for a named session's state.
-func sessionDir(repoRoot, name string) string {
-	return filepath.Join(repoRoot, StateDir, "sessions", name)
+func sessionDir(repoRoot, name string) (string, error) {
+	baseDir, err := RepoStateDir(repoRoot)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(baseDir, "sessions", name), nil
 }
 
 // StatePath returns the state file path for a named session.
-func StatePath(repoRoot, name string) string {
-	return filepath.Join(sessionDir(repoRoot, name), StateFile)
+func StatePath(repoRoot, name string) (string, error) {
+	dir, err := sessionDir(repoRoot, name)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, StateFile), nil
 }
 
 // LogPath returns the log file path for a session (single run, no index).
-func LogPath(repoRoot, sessionName string) string {
-	return filepath.Join(sessionDir(repoRoot, sessionName), "logs", "solve.log")
+func LogPath(repoRoot, sessionName string) (string, error) {
+	dir, err := sessionDir(repoRoot, sessionName)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "logs", "solve.log"), nil
 }
 
 // PiSessionDir returns the host path where pi session state is persisted for a session.
 // This directory is mounted into the container so conversation history survives container restarts.
-func PiSessionDir(repoRoot, sessionName string) string {
-	return filepath.Join(sessionDir(repoRoot, sessionName), "pi-sessions")
+func PiSessionDir(repoRoot, sessionName string) (string, error) {
+	dir, err := sessionDir(repoRoot, sessionName)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "pi-sessions"), nil
 }
 
 // ListSessions returns the names of all sessions that have a state file in the repo.
 func ListSessions(repoRoot string) ([]string, error) {
-	sessionsDir := filepath.Join(repoRoot, StateDir, "sessions")
+	baseDir, err := RepoStateDir(repoRoot)
+	if err != nil {
+		return nil, err
+	}
+	sessionsDir := filepath.Join(baseDir, "sessions")
 	entries, err := os.ReadDir(sessionsDir)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -202,7 +246,10 @@ func ListSessions(repoRoot string) ([]string, error) {
 
 // Load reads the state for a named session.
 func Load(repoRoot, name string) (*State, error) {
-	path := StatePath(repoRoot, name)
+	path, err := StatePath(repoRoot, name)
+	if err != nil {
+		return nil, err
+	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -219,7 +266,10 @@ func Load(repoRoot, name string) (*State, error) {
 
 // Save writes the state for a named session.
 func Save(repoRoot string, s *State) error {
-	dir := sessionDir(repoRoot, s.Name)
+	dir, err := sessionDir(repoRoot, s.Name)
+	if err != nil {
+		return err
+	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("create session dir: %w", err)
 	}
@@ -227,7 +277,10 @@ func Save(repoRoot string, s *State) error {
 	if err != nil {
 		return fmt.Errorf("marshal state: %w", err)
 	}
-	path := StatePath(repoRoot, s.Name)
+	path, err := StatePath(repoRoot, s.Name)
+	if err != nil {
+		return err
+	}
 	if err := os.WriteFile(path, data, 0o644); err != nil {
 		return fmt.Errorf("write state: %w", err)
 	}
@@ -236,7 +289,10 @@ func Save(repoRoot string, s *State) error {
 
 // Remove deletes the state directory for a named session.
 func Remove(repoRoot, name string) error {
-	dir := sessionDir(repoRoot, name)
+	dir, err := sessionDir(repoRoot, name)
+	if err != nil {
+		return err
+	}
 	if err := os.RemoveAll(dir); err != nil {
 		return fmt.Errorf("remove session dir: %w", err)
 	}
@@ -268,11 +324,11 @@ type StatsRecord struct {
 }
 
 func statsPath() (string, error) {
-	dir, err := os.UserConfigDir()
+	home, err := CerberusHome()
 	if err != nil {
-		return "", fmt.Errorf("locate config dir: %w", err)
+		return "", err
 	}
-	return filepath.Join(dir, "cerberus", StatsFile), nil
+	return filepath.Join(home, StatsFile), nil
 }
 
 // AppendStats adds a StatsRecord to ~/.config/cerberus/stats.json.
@@ -332,11 +388,11 @@ func LoadStats() ([]StatsRecord, error) {
 const RepoRegistryFile = "repos.json"
 
 func repoRegistryPath() (string, error) {
-	dir, err := os.UserConfigDir()
+	home, err := CerberusHome()
 	if err != nil {
-		return "", fmt.Errorf("locate config dir: %w", err)
+		return "", err
 	}
-	return filepath.Join(dir, "cerberus", RepoRegistryFile), nil
+	return filepath.Join(home, RepoRegistryFile), nil
 }
 
 // RegisterRepo adds repoRoot to the global repo registry if not already present.

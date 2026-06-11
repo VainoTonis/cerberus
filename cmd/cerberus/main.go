@@ -491,7 +491,10 @@ func cmdStart(sessionName, prompt, promptFile, agentFlag, modelFlag, imageFlag, 
 	}
 
 	// Initialize state.json
-	logPath := config.LogPath(repoRoot, sessionName)
+	logPath, err := config.LogPath(repoRoot, sessionName)
+	if err != nil {
+		return fmt.Errorf("get log path: %w", err)
+	}
 	if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err != nil {
 		return fmt.Errorf("create log dir: %w", err)
 	}
@@ -1727,13 +1730,19 @@ func cmdChat(sessionName, prompt, promptFile, agentFlag, modelFlag, imageFlag, p
 		return fmt.Errorf("create worktree: %w", err)
 	}
 
-	logPath := config.LogPath(repoRoot, sessionName)
+	logPath, err := config.LogPath(repoRoot, sessionName)
+	if err != nil {
+		return fmt.Errorf("get log path: %w", err)
+	}
 	if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err != nil {
 		return fmt.Errorf("create log dir: %w", err)
 	}
 
 	// Create the pi session dir on the host so the mount source exists.
-	piSessDir := config.PiSessionDir(repoRoot, sessionName)
+	piSessDir, err := config.PiSessionDir(repoRoot, sessionName)
+	if err != nil {
+		return fmt.Errorf("get pi session dir: %w", err)
+	}
 	if err := os.MkdirAll(piSessDir, 0o755); err != nil {
 		return fmt.Errorf("create pi session dir: %w", err)
 	}
