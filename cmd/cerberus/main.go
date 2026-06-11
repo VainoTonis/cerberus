@@ -857,14 +857,14 @@ func requireProxyNetwork() error {
 	return nil
 }
 
-// agentEnvFilePath returns the path to ~/.config/cerberus/agent.env, or empty
+// agentEnvFilePath returns the path to ~/.cerberus/agent.env, or empty
 // string if the file does not exist.
 func agentEnvFilePath() string {
-	dir, err := os.UserConfigDir()
+	home, err := config.CerberusHome()
 	if err != nil {
 		return ""
 	}
-	p := filepath.Join(dir, "cerberus", "agent.env")
+	p := filepath.Join(home, "agent.env")
 	if _, err := os.Stat(p); err != nil {
 		return ""
 	}
