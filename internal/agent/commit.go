@@ -9,18 +9,25 @@ import (
 	"strings"
 )
 
-func buildAssistedBy(workerModel string) string {
-	if workerModel != "" {
-		return "\n\nAssisted-by: " + workerModel
+func buildAssistedBy(workerModel, callerModel string) string {
+	var parts []string
+	if callerModel != "" {
+		parts = append(parts, callerModel+" (orchestrator)")
 	}
-	return ""
+	if workerModel != "" {
+		parts = append(parts, workerModel+" (worker)")
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return "\n\nAssisted-by: " + strings.Join(parts, ", ")
 }
 
 // AskForCommitMessage runs pi in worktreePath to generate a commit
 // message for the given diff. It returns a single subject line (≤72 chars).
 // On any failure it returns a safe fallback message rather than an error,
 // so callers can always proceed with a commit.
-func AskForCommitMessage(worktreePath, diff, model string) string {
+func AskForCommitMessage(worktreePath, diff, model, callerModel string) string {
 	prompt := fmt.Sprintf(
 		"You are a cerberus sub-agent. Output only a git commit message — do not use cerberus or any other tool.\n\n"+
 			"Write a git commit message for the following diff using the Conventional Commits format.\n"+
@@ -46,7 +53,7 @@ func AskForCommitMessage(worktreePath, diff, model string) string {
 	cmd.Stderr = pw
 
 	if err := cmd.Start(); err != nil {
-		return "chore(cerberus): agent solution" + buildAssistedBy(model)
+		return "chore(cerberus): agent solution" + buildAssistedBy(model, callerModel)
 	}
 
 	var collected strings.Builder
@@ -80,12 +87,12 @@ func AskForCommitMessage(worktreePath, diff, model string) string {
 
 	msg := extractFirstLine(collected.String())
 	if msg == "" {
-		return "chore(cerberus): agent solution" + buildAssistedBy(model)
+		return "chore(cerberus): agent solution" + buildAssistedBy(model, callerModel)
 	}
 	if len(msg) > 72 {
 		msg = msg[:72]
 	}
-	return msg + buildAssistedBy(model)
+	return msg + buildAssistedBy(model, callerModel)
 }
 
 func extractFirstLine(s string) string {
