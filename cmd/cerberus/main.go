@@ -644,7 +644,7 @@ func cmdStart(sessionName, prompt, promptFile, agentFlag, modelFlag, imageFlag, 
 		diff = ""
 	}
 
-	commitMsg := agent.AskForCommitMessage(wtPath, diff, model)
+	commitMsg := agent.AskForCommitMessage(wtPath, diff, model, invoker)
 	commitHash, err := git.CommitAndGetHash(wtPath, commitMsg)
 	if err != nil {
 		return fmt.Errorf("commit failed: %w", err)
@@ -1040,7 +1040,7 @@ func cmdRerun(name, prompt, promptFile, profileFile, output, callback, invoker s
 	fmt.Printf("[%s] committing...\n", sessionName)
 
 	diff, _ := git.StageAndDiff(state.Run.Worktree, state.BaseCommit)
-	commitMsg := agent.AskForCommitMessage(state.Run.Worktree, diff, state.Run.Model)
+	commitMsg := agent.AskForCommitMessage(state.Run.Worktree, diff, state.Run.Model, state.Run.InvokedBy)
 	commitHash, err := git.CommitAndGetHash(state.Run.Worktree, commitMsg)
 	if err != nil {
 		return fmt.Errorf("commit failed: %w", err)
@@ -2030,7 +2030,7 @@ func cmdClose(repoRoot, name string) error {
 		fmt.Printf("[%s] committing...\n", sessionName)
 
 		diff, _ := git.StageAndDiff(state.Run.Worktree, state.BaseCommit)
-		commitMsg := agent.AskForCommitMessage(state.Run.Worktree, diff, state.Run.Model)
+		commitMsg := agent.AskForCommitMessage(state.Run.Worktree, diff, state.Run.Model, state.Run.InvokedBy)
 		commitHash, err := git.CommitAndGetHash(state.Run.Worktree, commitMsg)
 		if err != nil {
 			return fmt.Errorf("commit failed: %w", err)
