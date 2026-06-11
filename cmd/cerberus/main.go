@@ -61,13 +61,13 @@ func main() {
 
 func cmdStartCommand() *cobra.Command {
 	var name, prompt, promptFile, agentFlag, modelFlag, imageFlag, profileFile string
-	var outputFlag, callbackFlag, invokerFlag string
+	var outputFlag, callbackFlag, invokerFlag, orchestratorFlag string
 
 	cmd := &cobra.Command{
 		Use:   "start",
 		Short: "Start a single agent run in an isolated worktree",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return cmdStart(name, prompt, promptFile, agentFlag, modelFlag, imageFlag, profileFile, outputFlag, callbackFlag, invokerFlag)
+			return cmdStart(name, prompt, promptFile, agentFlag, modelFlag, imageFlag, profileFile, outputFlag, callbackFlag, invokerFlag, orchestratorFlag)
 		},
 	}
 
@@ -81,6 +81,7 @@ func cmdStartCommand() *cobra.Command {
 	cmd.Flags().StringVar(&outputFlag, "output", "text", "output format: text (default) or jsonl")
 	cmd.Flags().StringVar(&callbackFlag, "callback", "", "URL to POST events to as they happen")
 	cmd.Flags().StringVar(&invokerFlag, "invoker", "cli", "invoker identifier for stats tracking")
+	cmd.Flags().StringVar(&orchestratorFlag, "orchestrator", "", "orchestrator identifier (optional)")
 
 	cmd.RegisterFlagCompletionFunc("name", completionSessions)
 
@@ -89,13 +90,13 @@ func cmdStartCommand() *cobra.Command {
 
 func cmdRerunCommand() *cobra.Command {
 	var name, prompt, promptFile, profileFile string
-	var outputFlag, callbackFlag, invokerFlag string
+	var outputFlag, callbackFlag, invokerFlag, orchestratorFlag string
 
 	cmd := &cobra.Command{
 		Use:   "rerun",
 		Short: "Run the agent again in an existing session worktree",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return cmdRerun(name, prompt, promptFile, profileFile, outputFlag, callbackFlag, invokerFlag)
+			return cmdRerun(name, prompt, promptFile, profileFile, outputFlag, callbackFlag, invokerFlag, orchestratorFlag)
 		},
 	}
 
@@ -106,6 +107,7 @@ func cmdRerunCommand() *cobra.Command {
 	cmd.Flags().StringVar(&outputFlag, "output", "text", "output format: text (default) or jsonl")
 	cmd.Flags().StringVar(&callbackFlag, "callback", "", "URL to POST events to as they happen")
 	cmd.Flags().StringVar(&invokerFlag, "invoker", "cli", "invoker identifier for stats tracking")
+	cmd.Flags().StringVar(&orchestratorFlag, "orchestrator", "", "orchestrator identifier (optional)")
 
 	cmd.RegisterFlagCompletionFunc("name", completionSessions)
 
@@ -462,7 +464,7 @@ func createWorktreePath(repoRoot, wtPath, branchName, baseCommit string) (string
 
 // cmdStart creates a git worktree and runs an agent inside a docker container,
 // then commits the result.
-func cmdStart(sessionName, prompt, promptFile, agentFlag, modelFlag, imageFlag, profileFile, output, callback, invoker string) error {
+func cmdStart(sessionName, prompt, promptFile, agentFlag, modelFlag, imageFlag, profileFile, output, callback, invoker, orchestrator string) error {
 	userCfg, err := config.LoadUserConfig()
 	if err != nil {
 		return err
@@ -582,6 +584,7 @@ func cmdStart(sessionName, prompt, promptFile, agentFlag, modelFlag, imageFlag, 
 			StartedAt:   time.Now(),
 			WorkDir:     workDir,
 			InvokedBy:   invoker,
+			Orchestrator: orchestrator,
 		},
 	}
 
@@ -644,7 +647,7 @@ func cmdStart(sessionName, prompt, promptFile, agentFlag, modelFlag, imageFlag, 
 		diff = ""
 	}
 
-	commitMsg := agent.AskForCommitMessage(wtPath, diff, model, invoker)
+	commitMsg := agent.AskForCommitMessage(wtPath, diff, model, orchestrator)
 	commitHash, err := git.CommitAndGetHash(wtPath, commitMsg)
 	if err != nil {
 		return fmt.Errorf("commit failed: %w", err)
@@ -929,7 +932,7 @@ func agentEnvFilePath() string {
 }
 
 // cmdRerun runs the agent again in an existing worktree with a new prompt.
-func cmdRerun(name, prompt, promptFile, profileFile, output, callback, invoker string) error {
+func cmdRerun(name, prompt, promptFile, profileFile, output, callback, invoker, orchestrator string) error {
 	repoRoot, err := resolveRepoRoot()
 	if err != nil {
 		return err
@@ -966,6 +969,12 @@ func cmdRerun(name, prompt, promptFile, profileFile, output, callback, invoker s
 	// Store invoker if provided
 	if invoker != "" && invoker != "cli" {
 		state.Run.InvokedBy = invoker
+		config.Save(repoRoot, state)
+	}
+
+	// Update orchestrator if provided
+	if orchestrator != "" {
+		state.Run.Orchestrator = orchestrator
 		config.Save(repoRoot, state)
 	}
 	agentImpl, err := agent.Get(state.Run.Agent)
@@ -1040,7 +1049,7 @@ func cmdRerun(name, prompt, promptFile, profileFile, output, callback, invoker s
 	fmt.Printf("[%s] committing...\n", sessionName)
 
 	diff, _ := git.StageAndDiff(state.Run.Worktree, state.BaseCommit)
-	commitMsg := agent.AskForCommitMessage(state.Run.Worktree, diff, state.Run.Model, state.Run.InvokedBy)
+	commitMsg := agent.AskForCommitMessage(state.Run.Worktree, diff, state.Run.Model, state.Run.Orchestrator)
 	commitHash, err := git.CommitAndGetHash(state.Run.Worktree, commitMsg)
 	if err != nil {
 		return fmt.Errorf("commit failed: %w", err)
@@ -1504,6 +1513,7 @@ func appendStats(state *config.State) error {
 		WorkDir:          workDirBasename,
 		InvokedBy:        r.InvokedBy,
 		Interactive:      r.Interactive,
+		Orchestrator:     r.Orchestrator,
 	}
 
 	return config.AppendStats(rec)
@@ -2030,7 +2040,7 @@ func cmdClose(repoRoot, name string) error {
 		fmt.Printf("[%s] committing...\n", sessionName)
 
 		diff, _ := git.StageAndDiff(state.Run.Worktree, state.BaseCommit)
-		commitMsg := agent.AskForCommitMessage(state.Run.Worktree, diff, state.Run.Model, state.Run.InvokedBy)
+		commitMsg := agent.AskForCommitMessage(state.Run.Worktree, diff, state.Run.Model, state.Run.Orchestrator)
 		commitHash, err := git.CommitAndGetHash(state.Run.Worktree, commitMsg)
 		if err != nil {
 			return fmt.Errorf("commit failed: %w", err)
