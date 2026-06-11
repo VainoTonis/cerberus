@@ -48,6 +48,7 @@ func main() {
 		cmdLogsCommand(),
 		cmdReviewCommand(),
 		cmdCleanCommand(),
+		cmdApplyCommand(),
 		cmdStatsCommand(),
 		cmdPsCommand(),
 		cmdVersionCommand(),
@@ -191,6 +192,62 @@ func cmdCleanCommand() *cobra.Command {
 	cmd.RegisterFlagCompletionFunc("name", completionSessions)
 
 	return cmd
+}
+
+func cmdApplyCommand() *cobra.Command {
+	var name string
+
+	cmd := &cobra.Command{
+		Use:   "apply",
+		Short: "Merge a done session's branch into the current branch and clean up",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			repoRoot, err := resolveRepoRoot()
+			if err != nil {
+				return err
+			}
+			return cmdApply(repoRoot, name)
+		},
+	}
+
+	cmd.Flags().StringVar(&name, "name", "", "session name (required if multiple sessions exist)")
+	cmd.RegisterFlagCompletionFunc("name", completionSessions)
+
+	return cmd
+}
+
+func cmdApply(repoRoot, name string) error {
+	sessionName, err := resolveSession(repoRoot, name)
+	if err != nil {
+		return err
+	}
+
+	state, err := config.Load(repoRoot, sessionName)
+	if err != nil {
+		return err
+	}
+
+	if state.Run.Status != config.StatusDone {
+		return fmt.Errorf("session %q is not done (status: %s)", sessionName, state.Run.Status)
+	}
+
+	// Get current branch
+	out, err := exec.Command("git", "-C", repoRoot, "rev-parse", "--abbrev-ref", "HEAD").Output()
+	if err != nil {
+		return fmt.Errorf("get current branch: %w", err)
+	}
+	currentBranch := strings.TrimSpace(string(out))
+
+	sessionBranch := state.Run.Branch
+
+	// Fast-forward merge
+	mergeCmd := exec.Command("git", "-C", repoRoot, "merge", "--ff-only", sessionBranch)
+	if mergeOut, err := mergeCmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("merge %s into %s: %s", sessionBranch, currentBranch, strings.TrimSpace(string(mergeOut)))
+	}
+
+	fmt.Printf("merged %s into %s\n", sessionBranch, currentBranch)
+
+	return cmdClean(repoRoot, sessionName)
 }
 
 func cmdStatsCommand() *cobra.Command {
