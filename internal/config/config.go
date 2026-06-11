@@ -170,6 +170,7 @@ type Run struct {
 	CostUSD          float64   `json:"cost_usd,omitempty"`
 	WorkDir          string    `json:"work_dir,omitempty"`
 	InvokedBy        string    `json:"invoked_by,omitempty"`
+	Orchestrator     string    `json:"orchestrator,omitempty"`
 }
 
 type State struct {
@@ -320,6 +321,7 @@ type StatsRecord struct {
 	CostUSD          float64   `json:"cost_usd,omitempty"`
 	WorkDir          string    `json:"work_dir,omitempty"`
 	InvokedBy        string    `json:"invoked_by,omitempty"`
+	Orchestrator     string    `json:"orchestrator,omitempty"`
 	Interactive      bool      `json:"interactive,omitempty"`
 }
 
