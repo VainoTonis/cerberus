@@ -6,6 +6,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"github.com/tonis/cerberus/internal/config"
 )
 
 // RepoRoot returns the absolute path of the git repo root for the given directory.
@@ -36,8 +38,12 @@ func CurrentCommit(dir string) (string, error) {
 }
 
 // WorktreePath returns the expected path for a solution's worktree within a session.
-func WorktreePath(repoRoot, sessionName string, index int) string {
-	return filepath.Join(repoRoot, ".cerberus", "sessions", sessionName, "worktrees", fmt.Sprintf("solve-%d", index))
+func WorktreePath(repoRoot, sessionName string, index int) (string, error) {
+	repoStateDir, err := config.RepoStateDir(repoRoot)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(repoStateDir, "sessions", sessionName, "worktrees", fmt.Sprintf("solve-%d", index)), nil
 }
 
 // BranchName returns the branch name for a given session and solution index.
@@ -48,7 +54,10 @@ func BranchName(sessionName string, index int) string {
 // CreateWorktree creates a new worktree and branch for the given session and
 // solution index, checked out at the given commit.
 func CreateWorktree(repoRoot, sessionName string, index int, baseCommit string) (path string, branch string, err error) {
-	path = WorktreePath(repoRoot, sessionName, index)
+	path, err = WorktreePath(repoRoot, sessionName, index)
+	if err != nil {
+		return "", "", fmt.Errorf("get worktree path: %w", err)
+	}
 	branch = BranchName(sessionName, index)
 
 	// Remove if it already exists (idempotent).
@@ -63,7 +72,10 @@ func CreateWorktree(repoRoot, sessionName string, index int, baseCommit string) 
 
 // RemoveWorktree removes the worktree and deletes its branch.
 func RemoveWorktree(repoRoot, sessionName string, index int) error {
-	path := WorktreePath(repoRoot, sessionName, index)
+	path, err := WorktreePath(repoRoot, sessionName, index)
+	if err != nil {
+		return fmt.Errorf("get worktree path: %w", err)
+	}
 	branch := BranchName(sessionName, index)
 
 	if err := removeWorktree(repoRoot, path); err != nil {

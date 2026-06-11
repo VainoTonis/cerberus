@@ -483,7 +483,11 @@ func cmdStart(sessionName, prompt, promptFile, agentFlag, modelFlag, imageFlag, 
 	}
 
 	// Create worktree at .cerberus/sessions/<name>/worktrees/solve
-	wtPath := filepath.Join(repoRoot, ".cerberus", "sessions", sessionName, "worktrees", "solve")
+	repoStateDir, err := config.RepoStateDir(repoRoot)
+	if err != nil {
+		return fmt.Errorf("get repo state dir: %w", err)
+	}
+	wtPath := filepath.Join(repoStateDir, "sessions", sessionName, "worktrees", "solve")
 	branchName := "cerberus/" + sessionName
 
 	if _, err := createWorktreePath(repoRoot, wtPath, branchName, baseCommit); err != nil {
@@ -1723,7 +1727,11 @@ func cmdChat(sessionName, prompt, promptFile, agentFlag, modelFlag, imageFlag, p
 		return err
 	}
 
-	wtPath := filepath.Join(repoRoot, ".cerberus", "sessions", sessionName, "worktrees", "solve")
+	repoStateDir, err := config.RepoStateDir(repoRoot)
+	if err != nil {
+		return fmt.Errorf("get repo state dir: %w", err)
+	}
+	wtPath := filepath.Join(repoStateDir, "sessions", sessionName, "worktrees", "solve")
 	branchName := "cerberus/" + sessionName
 
 	if _, err := createWorktreePath(repoRoot, wtPath, branchName, baseCommit); err != nil {
