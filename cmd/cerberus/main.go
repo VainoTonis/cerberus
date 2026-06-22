@@ -2064,33 +2064,14 @@ func cmdTurn() error {
 		}
 	}
 
-	// For interactive sessions, need to start docker container if not already running
-	if state.Run.ContainerID == "" && !isNewSession && state.Run.Status == config.StatusWaiting {
-		// Container should already exist from initial setup, but if not, this is an error
-		response := JSONTurnResponse{
-			Status: "error",
-			UUID:   state.Run.UUID,
-			Error:  "interactive session container not running",
-		}
-		data, _ := json.Marshal(response)
-		fmt.Println(string(data))
-		return nil
-	}
-
-	// For new sessions, start the container
+	// For new sessions, start the detached container
 	if isNewSession {
 		if err := config.RegisterRepo(repoRoot); err != nil {
 			fmt.Fprintf(os.Stderr, "warn: register repo: %v\n", err)
 		}
 
-		// Start initial agent session in docker (interactive mode)
-		emitter := buildJSONEmitter(input.CallbackURL)
-		defer emitter.Close()
-
-		state.Run.Status = config.StatusRunning
-		config.Save(repoRoot, state)
-
-		containerID, exitCode, err := startInteractiveSession(repoRoot, state, userCfg, emitter)
+		// Start detached container in background (no initial prompt execution)
+		containerID, err := startInteractiveSession(repoRoot, state, userCfg)
 		if err != nil {
 			state.Run.Status = config.StatusFailed
 			config.Save(repoRoot, state)
@@ -2104,14 +2085,23 @@ func cmdTurn() error {
 			return nil
 		}
 
-		if exitCode != 0 {
+		state.Run.ContainerID = containerID
+		state.Run.Status = config.StatusWaiting
+		config.Save(repoRoot, state)
+	} else if state.Run.ContainerID != "" && !docker.IsContainerRunning(state.Run.ContainerID) {
+		// Container exists but not running; restart it from persisted state
+		if err := config.RegisterRepo(repoRoot); err != nil {
+			fmt.Fprintf(os.Stderr, "warn: register repo: %v\n", err)
+		}
+
+		containerID, err := startInteractiveSession(repoRoot, state, userCfg)
+		if err != nil {
 			state.Run.Status = config.StatusFailed
-			state.Run.ExitCode = exitCode
 			config.Save(repoRoot, state)
 			response := JSONTurnResponse{
 				Status: "error",
 				UUID:   state.Run.UUID,
-				Error:  fmt.Sprintf("interactive session init failed with exit code %d", exitCode),
+				Error:  fmt.Sprintf("restart container: %v", err),
 			}
 			data, _ := json.Marshal(response)
 			fmt.Println(string(data))
@@ -2121,6 +2111,18 @@ func cmdTurn() error {
 		state.Run.ContainerID = containerID
 		state.Run.Status = config.StatusWaiting
 		config.Save(repoRoot, state)
+	}
+
+	// Ensure container is running
+	if state.Run.ContainerID == "" {
+		response := JSONTurnResponse{
+			Status: "error",
+			UUID:   state.Run.UUID,
+			Error:  "no container available for turn",
+		}
+		data, _ := json.Marshal(response)
+		fmt.Println(string(data))
+		return nil
 	}
 
 	// Run the turn
@@ -2158,14 +2160,16 @@ func cmdTurn() error {
 		return nil
 	}
 
-	// Store new user message in cache
+	// Store new user message in cache with generated ID
 	if state.Run.MessageCache == nil {
 		state.Run.MessageCache = &config.MessageCache{
 			Messages: []config.Message{},
 		}
 	}
 
+	// Generate new ID for this user message
 	userMsgID := generateUUID()
+
 	newMsg := config.Message{
 		ID:       userMsgID,
 		Role:     "user",
@@ -2205,36 +2209,37 @@ func cmdTurn() error {
 	return nil
 }
 
-// startInteractiveSession initializes a docker container for interactive agent execution.
-func startInteractiveSession(repoRoot string, state *config.State, userCfg config.UserConfig, emitter event.Emitter) (string, int, error) {
-	agentImpl, err := agent.Get(state.Run.Agent)
-	if err != nil {
-		return "", 1, err
+// startInteractiveSession launches a detached docker container for interactive agent execution.
+// It creates the pi session directory, starts a long-lived container with sleep infinity,
+// and leaves it running for subsequent turns via docker exec.
+// The initial message is NOT executed during container startup; it waits for the first turn.
+func startInteractiveSession(repoRoot string, state *config.State, userCfg config.UserConfig) (string, error) {
+	if err := ensureCopilotToken(); err != nil {
+		return "", fmt.Errorf("copilot token refresh: %w", err)
 	}
 
-	cmdArgs, err := agentImpl.Args(agent.RunArgs{
-		Prompt:      state.Prompt,
-		Model:       state.Run.Model,
-		Interactive: true,
-	})
-	if err != nil {
-		return "", 1, fmt.Errorf("build command: %w", err)
+	if err := requireProxyNetwork(); err != nil {
+		return "", err
 	}
-
-	logFile, err := os.Create(state.Run.LogFile)
-	if err != nil {
-		return "", 1, fmt.Errorf("create log file: %w", err)
-	}
-	defer logFile.Close()
 
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
-		return "", 1, fmt.Errorf("get home dir: %w", err)
+		return "", fmt.Errorf("get home dir: %w", err)
+	}
+
+	// Create pi session directory for mounting into container
+	piSessionDir, err := config.PiSessionDir(repoRoot, state.Name)
+	if err != nil {
+		return "", fmt.Errorf("get pi session dir: %w", err)
+	}
+	if err := os.MkdirAll(piSessionDir, 0o755); err != nil {
+		return "", fmt.Errorf("create pi session dir: %w", err)
 	}
 
 	mounts := []docker.Mount{
 		{Host: state.Run.Worktree, Container: "/workspace"},
 		{Host: filepath.Join(homeDir, ".pi", "agent"), Container: "/home/agent/.pi/agent"},
+		{Host: piSessionDir, Container: "/tmp/pi-sessions"},
 	}
 
 	gradleInitD := filepath.Join(homeDir, ".gradle", "init.d")
@@ -2247,30 +2252,7 @@ func startInteractiveSession(repoRoot string, state *config.State, userCfg confi
 		mounts = append(mounts, docker.Mount{Host: awsDir, Container: "/home/agent/.aws", ReadOnly: true})
 	}
 
-	if err := ensureCopilotToken(); err != nil {
-		return "", 0, fmt.Errorf("copilot token refresh: %w", err)
-	}
-
-	if err := requireProxyNetwork(); err != nil {
-		return "", 0, err
-	}
-
 	envFile := agentEnvFilePath()
-
-	pipeR, pipeW := io.Pipe()
-
-	ctx, cancelRun := context.WithCancel(context.Background())
-	defer cancelRun()
-
-	proc := stream.NewProcessor(state.Name, emitter, logFile, stream.Limits{
-		MaxTurns:        userCfg.EffectiveMaxTurns(),
-		MaxOutputTokens: userCfg.EffectiveMaxOutputTokens(),
-	}, cancelRun)
-
-	go func() {
-		defer pipeR.Close()
-		proc.Process(pipeR)
-	}()
 
 	awsEnv := map[string]string{
 		"AWS_PROFILE":           userCfg.AWSProfile,
@@ -2293,39 +2275,34 @@ func startInteractiveSession(repoRoot string, state *config.State, userCfg confi
 		envVars = append(envVars, k+"="+v)
 	}
 
-	runArgs := docker.RunArgs{
+	startArgs := docker.StartArgs{
 		Image:    state.Run.Image,
 		Workdir:  "/workspace",
 		Mounts:   mounts,
-		Cmd:      cmdArgs,
 		Env:      envVars,
 		EnvFile:  envFile,
 		Networks: []string{"sandbox-internal"},
-		Stdout:   pipeW,
-		Stderr:   pipeW,
 	}
 
-	containerID, exitCode, err := docker.Run(ctx, runArgs)
-	pipeW.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
 
-	stats := proc.Stats()
-	if stats.SessionID != "" {
-		state.Run.SessionID = stats.SessionID
-	}
-	state.Run.InputTokens = stats.InputTokens
-	state.Run.OutputTokens = stats.OutputTokens
-	state.Run.CacheReadTokens = stats.CacheReadTokens
-	state.Run.CacheWriteTokens = stats.CacheWriteTokens
-	state.Run.CostUSD = stats.CostUSD
-	config.Save(repoRoot, state)
-
-	emitter.Close()
-
+	containerID, err := docker.Start(ctx, startArgs)
 	if err != nil {
-		return containerID, exitCode, fmt.Errorf("docker run: %w", err)
+		return "", fmt.Errorf("docker start: %w", err)
 	}
 
-	return containerID, exitCode, nil
+	// Log initial container creation
+	logFile, err := os.Create(state.Run.LogFile)
+	if err != nil {
+		return containerID, fmt.Errorf("create log file: %w", err)
+	}
+	defer logFile.Close()
+
+	fmt.Fprintf(logFile, "--- interactive session started: %s ---\n", time.Now().Format(time.RFC3339))
+	fmt.Fprintf(logFile, "container: %s\n", containerID)
+
+	return containerID, nil
 }
 
 // Helper functions (stubs) - these were removed but need to be present
