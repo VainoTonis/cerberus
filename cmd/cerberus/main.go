@@ -1774,6 +1774,14 @@ func runTurnViaExec(repoRoot string, state *config.State, prompt string, userCfg
 	return exitCode, nil
 }
 
+// JSONMessageInput represents a structured message object in the request.
+type JSONMessageInput struct {
+	ID       string `json:"id,omitempty"`
+	ParentID string `json:"parent_id,omitempty"`
+	Role     string `json:"role,omitempty"`
+	Content  string `json:"content,omitempty"`
+}
+
 // JSONTurnRequest represents the input JSON for a turn command.
 type JSONTurnRequest struct {
 	UUID            string           `json:"uuid"`                         // Session UUID (for existing sessions) or empty for new
@@ -1781,26 +1789,35 @@ type JSONTurnRequest struct {
 	Agent           string           `json:"agent,omitempty"`              // Agent name (for new sessions)
 	Model           string           `json:"model,omitempty"`              // Model (for new sessions)
 	Image           string           `json:"image,omitempty"`              // Docker image (for new sessions)
-	Message         string           `json:"message"`                      // User message for this turn
+	Message         string           `json:"message"`                      // User message for this turn (legacy string format)
+	MessageObject   JSONMessageInput `json:"message_object,omitempty"`     // Structured message input (new format)
 	ActiveMessageID string           `json:"active_message_id,omitempty"`  // Active message ID in history
 	History         []config.Message `json:"history,omitempty"`            // Optional conversation history with parent links
 	CallbackURL     string           `json:"callback_url,omitempty"`       // Optional callback URL for events
 }
 
+// JSONMessageObject represents a structured message object in the response.
+type JSONMessageObject struct {
+	ID           string `json:"id"`
+	ParentID     string `json:"parent_id,omitempty"`
+	Role         string `json:"role"`
+	Content      string `json:"content"`
+	CheckpointID *string `json:"checkpoint_id"` // null placeholder
+}
+
 // JSONTurnResponse represents the output JSON for a turn command.
 type JSONTurnResponse struct {
-	Status           string  `json:"status"`                       // "ok" | "error" | "need_history"
-	UUID             string  `json:"uuid"`                         // Session UUID
-	SessionID        string  `json:"session_id,omitempty"`         // Agent session ID
-	ActiveMessageID  string  `json:"active_message_id,omitempty"`  // Current active message ID
-	AssistantMessage string  `json:"assistant_message,omitempty"`  // Placeholder for assistant response
-	InputTokens      int     `json:"input_tokens,omitempty"`       // Total input tokens used
-	OutputTokens     int     `json:"output_tokens,omitempty"`      // Total output tokens used
-	CacheReadTokens  int     `json:"cache_read_tokens,omitempty"`  // Cached tokens read
-	CacheWriteTokens int     `json:"cache_write_tokens,omitempty"` // Cached tokens written
-	CostUSD          float64 `json:"cost_usd,omitempty"`           // Total cost in USD
-	NeedHistory      bool    `json:"need_history,omitempty"`       // True if local cache is missing/conflicting
-	Error            string  `json:"error,omitempty"`              // Error message if status is "error"
+	Status           string             `json:"status"`                       // "ok" | "error"
+	UUID             string             `json:"uuid"`                         // Session UUID
+	SessionID        string             `json:"session_id,omitempty"`         // Agent session ID
+	ActiveMessageID  string             `json:"active_message_id,omitempty"`  // Current active message ID
+	AssistantMessage *JSONMessageObject `json:"assistant_message,omitempty"`  // Structured assistant response
+	InputTokens      int                `json:"input_tokens,omitempty"`       // Total input tokens used
+	OutputTokens     int                `json:"output_tokens,omitempty"`      // Total output tokens used
+	CacheReadTokens  int                `json:"cache_read_tokens,omitempty"`  // Cached tokens read
+	CacheWriteTokens int                `json:"cache_write_tokens,omitempty"` // Cached tokens written
+	CostUSD          float64            `json:"cost_usd,omitempty"`           // Total cost in USD
+	Error            string             `json:"error,omitempty"`              // Error message if status is "error"
 }
 
 // cmdTurn processes a single JSON chat turn from stdin and outputs JSON to stdout.
@@ -1808,7 +1825,7 @@ type JSONTurnResponse struct {
 //  - Input: session UUID (or empty for new), repo, optional agent/model/image, user message, optional history
 //  - Creates new interactive session if UUID empty and session doesn't exist
 //  - Continues existing session by stable UUID
-//  - Returns structured JSON with session info, tokens, and need_history flag
+//  - Returns structured JSON with session info, tokens, and structured assistant_message
 //  - Avoids writing agent text events to stdout
 func cmdTurn() error {
 	var input JSONTurnRequest
@@ -1823,7 +1840,7 @@ func cmdTurn() error {
 		return nil
 	}
 
-	if input.Message == "" {
+	if input.Message == "" && (input.MessageObject.Content == "") {
 		response := JSONTurnResponse{
 			Status: "error",
 			Error:  "message required",
@@ -1831,6 +1848,17 @@ func cmdTurn() error {
 		data, _ := json.Marshal(response)
 		fmt.Println(string(data))
 		return nil
+	}
+
+	// Extract message from either string or structured object
+	userMessage := input.Message
+	userMessageID := input.MessageObject.ID
+	userParentID := input.MessageObject.ParentID
+	if input.MessageObject.Content != "" {
+		userMessage = input.MessageObject.Content
+		if userMessageID == "" {
+			userMessageID = generateUUID()
+		}
 	}
 
 	repoRoot := input.Repo
@@ -2000,7 +2028,7 @@ func cmdTurn() error {
 			Name:       sessionName,
 			BaseBranch: baseBranch,
 			BaseCommit: baseCommit,
-			Prompt:     input.Message,
+			Prompt:     userMessage,
 			Run: config.Run{
 				Branch:       branchName,
 				Worktree:     wtPath,
@@ -2049,18 +2077,11 @@ func cmdTurn() error {
 		config.ApplyProfile(&userCfg, p)
 	}
 
-	// Check if local cache is conflicting
-	if !isNewSession && input.History != nil && len(input.History) > 0 {
-		if state.Run.MessageCache == nil || len(state.Run.MessageCache.Messages) != len(input.History) {
-			response := JSONTurnResponse{
-				Status:      "need_history",
-				UUID:        state.Run.UUID,
-				SessionID:   state.Run.SessionID,
-				NeedHistory: true,
-			}
-			data, _ := json.Marshal(response)
-			fmt.Println(string(data))
-			return nil
+	// If history is provided by caller, hydrate/replace local message cache
+	if input.History != nil && len(input.History) > 0 {
+		state.Run.MessageCache = &config.MessageCache{
+			Messages:        input.History,
+			ActiveMessageID: input.ActiveMessageID,
 		}
 	}
 
@@ -2132,7 +2153,7 @@ func cmdTurn() error {
 	state.Run.Status = config.StatusRunning
 	config.Save(repoRoot, state)
 
-	exitCode, err := runTurnViaExecJSON(repoRoot, state, input.Message, userCfg, emitter)
+	exitCode, err := runTurnViaExecJSON(repoRoot, state, userMessage, userCfg, emitter)
 	if err != nil {
 		state.Run.Status = config.StatusFailed
 		config.Save(repoRoot, state)
@@ -2167,17 +2188,24 @@ func cmdTurn() error {
 		}
 	}
 
-	// Generate new ID for this user message
-	userMsgID := generateUUID()
+	// Use provided message ID or generate one
+	if userMessageID == "" {
+		userMessageID = generateUUID()
+	}
+
+	// Use provided parent ID or fall back to active message ID from request
+	if userParentID == "" {
+		userParentID = input.ActiveMessageID
+	}
 
 	newMsg := config.Message{
-		ID:       userMsgID,
+		ID:       userMessageID,
 		Role:     "user",
-		Content:  input.Message,
-		ParentID: input.ActiveMessageID,
+		Content:  userMessage,
+		ParentID: userParentID,
 	}
 	state.Run.MessageCache.Messages = append(state.Run.MessageCache.Messages, newMsg)
-	state.Run.MessageCache.ActiveMessageID = userMsgID
+	state.Run.MessageCache.ActiveMessageID = userMessageID
 
 	state.Run.Status = config.StatusWaiting
 	if err := config.Save(repoRoot, state); err != nil {
@@ -2191,13 +2219,21 @@ func cmdTurn() error {
 		return nil
 	}
 
-	// Generate response
+	// Generate structured response with assistant_message object
+	// Note: checkpoint_id is null placeholder
+	assistantMsgID := generateUUID()
 	response := JSONTurnResponse{
-		Status:           "ok",
-		UUID:             state.Run.UUID,
-		SessionID:        state.Run.SessionID,
-		ActiveMessageID:  userMsgID,
-		AssistantMessage: "pending",
+		Status:          "ok",
+		UUID:            state.Run.UUID,
+		SessionID:       state.Run.SessionID,
+		ActiveMessageID: userMessageID,
+		AssistantMessage: &JSONMessageObject{
+			ID:           assistantMsgID,
+			ParentID:     userMessageID,
+			Role:         "assistant",
+			Content:      "",
+			CheckpointID: nil,
+		},
 		InputTokens:      state.Run.InputTokens,
 		OutputTokens:     state.Run.OutputTokens,
 		CacheReadTokens:  state.Run.CacheReadTokens,

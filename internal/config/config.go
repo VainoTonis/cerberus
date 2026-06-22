@@ -100,7 +100,7 @@ func CerberusHome() (string, error) {
 	return filepath.Join(homeDir, ".cerberus"), nil
 }
 
-// GenerateSessionUUID creates a new random UUID for a session.
+// GenerateSessionUUID creates a new RFC4122 v4 random UUID for a session.
 // The UUID is generated once and persisted in state.json.
 func GenerateSessionUUID() string {
 	b := make([]byte, 16)
@@ -109,6 +109,10 @@ func GenerateSessionUUID() string {
 		hash := sha256.Sum256([]byte(fmt.Sprintf("%d", time.Now().UnixNano())))
 		copy(b, hash[:])
 	}
+	// RFC4122 v4: set version to 0100 (bits 12-15 of time_hi_and_version)
+	b[6] = (b[6] & 0x0f) | 0x40
+	// RFC4122 v4: set variant to 10 (bits 6-7 of clock_seq_hi_and_reserved)
+	b[8] = (b[8] & 0x3f) | 0x80
 	// Format as UUID: 8-4-4-4-12 hex digits
 	return fmt.Sprintf("%s-%s-%s-%s-%s",
 		hex.EncodeToString(b[0:4]),
@@ -166,11 +170,12 @@ const (
 
 // Message represents a single message in the conversation history.
 type Message struct {
-	ID       string `json:"id"`
-	ParentID string `json:"parent_id,omitempty"`
-	Role     string `json:"role"` // "user" or "assistant"
-	Content  string `json:"content"`
-	Tokens   int    `json:"tokens,omitempty"`
+	ID           string `json:"id"`
+	ParentID     string `json:"parent_id,omitempty"`
+	Role         string `json:"role"` // "user" or "assistant"
+	Content      string `json:"content"`
+	Tokens       int    `json:"tokens,omitempty"`
+	CheckpointID string `json:"checkpoint_id,omitempty"`
 }
 
 // MessageCache holds structured conversation history with parent links.
