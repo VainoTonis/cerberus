@@ -132,3 +132,18 @@ func (m *MultiEmitter) Close() error {
 	}
 	return nil
 }
+
+// SilentEmitter discards all events (no-op emitter for JSON mode).
+type SilentEmitter struct{}
+
+func NewSilentEmitter() *SilentEmitter {
+	return &SilentEmitter{}
+}
+
+func (s *SilentEmitter) Emit(ev Event) error {
+	return nil
+}
+
+func (s *SilentEmitter) Close() error {
+	return nil
+}

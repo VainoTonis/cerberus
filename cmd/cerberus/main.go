@@ -3,6 +3,8 @@ package main
 import (
 	"bufio"
 	"context"
+	cryptorand "crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -27,6 +29,24 @@ import (
 
 // version is set at build time via -ldflags "-X main.version=..."
 var version = "dev"
+
+// generateUUID generates a random UUID-like string.
+func generateUUID() string {
+	b := make([]byte, 16)
+	if _, err := cryptorand.Read(b); err != nil {
+		// Fallback: use random numbers from math/rand
+		for i := range b {
+			b[i] = byte(rand.Intn(256))
+		}
+	}
+	// Format as UUID: 8-4-4-4-12 hex digits
+	return fmt.Sprintf("%s-%s-%s-%s-%s",
+		hex.EncodeToString(b[0:4]),
+		hex.EncodeToString(b[4:6]),
+		hex.EncodeToString(b[6:8]),
+		hex.EncodeToString(b[8:10]),
+		hex.EncodeToString(b[10:16]))
+}
 
 func main() {
 	rootCmd := &cobra.Command{
@@ -599,7 +619,7 @@ func cmdStart(sessionName, prompt, promptFile, agentFlag, modelFlag, imageFlag, 
 			WorkDir:      workDir,
 			InvokedBy:    invoker,
 			Orchestrator: orchestrator,
-			UUID:         config.GenerateSessionUUID(repoRoot, sessionName),
+			UUID:         config.GenerateSessionUUID(),
 		},
 	}
 
@@ -1569,6 +1589,24 @@ func buildEmitter(session, output, callback string) event.Emitter {
 	return event.NewMultiEmitter(emitters...)
 }
 
+// buildJSONEmitter constructs an event emitter for JSON chat mode (no stdout writes except JSON output).
+func buildJSONEmitter(callback string) event.Emitter {
+	var emitters []event.Emitter
+
+	// In JSON mode, only emit to callback if provided, no stdout text output
+	if callback != "" {
+		emitters = append(emitters, event.NewCallbackEmitter(callback))
+	} else {
+		// Silent emitter for JSON mode
+		emitters = append(emitters, event.NewSilentEmitter())
+	}
+
+	if len(emitters) == 1 {
+		return emitters[0]
+	}
+	return event.NewMultiEmitter(emitters...)
+}
+
 func truncate(s string, max int) string {
 	if len(s) <= max {
 		return s
@@ -1599,6 +1637,74 @@ func buildInteractiveEnvVars(userCfg config.UserConfig) []string {
 		envVars = append(envVars, k+"="+v)
 	}
 	return envVars
+}
+
+// runTurnViaExecJSON runs a single agent turn inside an already-running container via docker exec
+// for JSON chat mode (returns structured output, no agent text to stdout).
+func runTurnViaExecJSON(repoRoot string, state *config.State, prompt string, userCfg config.UserConfig, emitter event.Emitter) (int, error) {
+	agentImpl, err := agent.Get(state.Run.Agent)
+	if err != nil {
+		return 1, err
+	}
+
+	cmdArgs, err := agentImpl.Args(agent.RunArgs{
+		Prompt:          prompt,
+		Model:           state.Run.Model,
+		Interactive:     true,
+		ContinueSession: state.Run.SessionID != "",
+	})
+	if err != nil {
+		return 1, fmt.Errorf("build command: %w", err)
+	}
+
+	logFile, err := os.OpenFile(state.Run.LogFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return 1, fmt.Errorf("open log file: %w", err)
+	}
+	defer logFile.Close()
+
+	fmt.Fprintf(logFile, "\n--- json turn: %s ---\n", time.Now().Format(time.RFC3339))
+
+	envVars := buildInteractiveEnvVars(userCfg)
+
+	pipeR, pipeW := io.Pipe()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	proc := stream.NewProcessor(state.Name, emitter, logFile, stream.Limits{
+		MaxTurns:        userCfg.EffectiveMaxTurns(),
+		MaxOutputTokens: userCfg.EffectiveMaxOutputTokens(),
+	}, cancel)
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		defer pipeR.Close()
+		proc.Process(pipeR)
+	}()
+
+	exitCode, err := docker.Exec(ctx, state.Run.ContainerID, cmdArgs, envVars, pipeW, pipeW)
+	pipeW.Close()
+	wg.Wait()
+
+	stats := proc.Stats()
+	if stats.SessionID != "" && state.Run.SessionID == "" {
+		state.Run.SessionID = stats.SessionID
+	}
+	state.Run.InputTokens += stats.InputTokens
+	state.Run.OutputTokens += stats.OutputTokens
+	state.Run.CacheReadTokens += stats.CacheReadTokens
+	state.Run.CacheWriteTokens += stats.CacheWriteTokens
+	state.Run.CostUSD += stats.CostUSD
+	config.Save(repoRoot, state)
+
+	if err != nil {
+		return exitCode, fmt.Errorf("docker exec: %w", err)
+	}
+
+	return exitCode, nil
 }
 
 // runTurnViaExec runs a single agent turn inside an already-running container via docker exec.
@@ -1668,6 +1774,564 @@ func runTurnViaExec(repoRoot string, state *config.State, prompt string, userCfg
 	return exitCode, nil
 }
 
+// JSONTurnRequest represents the input JSON for a turn command.
+type JSONTurnRequest struct {
+	UUID            string           `json:"uuid"`                         // Session UUID (for existing sessions) or empty for new
+	Repo            string           `json:"repo"`                         // Repository root path
+	Agent           string           `json:"agent,omitempty"`              // Agent name (for new sessions)
+	Model           string           `json:"model,omitempty"`              // Model (for new sessions)
+	Image           string           `json:"image,omitempty"`              // Docker image (for new sessions)
+	Message         string           `json:"message"`                      // User message for this turn
+	ActiveMessageID string           `json:"active_message_id,omitempty"`  // Active message ID in history
+	History         []config.Message `json:"history,omitempty"`            // Optional conversation history with parent links
+	CallbackURL     string           `json:"callback_url,omitempty"`       // Optional callback URL for events
+}
+
+// JSONTurnResponse represents the output JSON for a turn command.
+type JSONTurnResponse struct {
+	Status           string  `json:"status"`                       // "ok" | "error" | "need_history"
+	UUID             string  `json:"uuid"`                         // Session UUID
+	SessionID        string  `json:"session_id,omitempty"`         // Agent session ID
+	ActiveMessageID  string  `json:"active_message_id,omitempty"`  // Current active message ID
+	AssistantMessage string  `json:"assistant_message,omitempty"`  // Placeholder for assistant response
+	InputTokens      int     `json:"input_tokens,omitempty"`       // Total input tokens used
+	OutputTokens     int     `json:"output_tokens,omitempty"`      // Total output tokens used
+	CacheReadTokens  int     `json:"cache_read_tokens,omitempty"`  // Cached tokens read
+	CacheWriteTokens int     `json:"cache_write_tokens,omitempty"` // Cached tokens written
+	CostUSD          float64 `json:"cost_usd,omitempty"`           // Total cost in USD
+	NeedHistory      bool    `json:"need_history,omitempty"`       // True if local cache is missing/conflicting
+	Error            string  `json:"error,omitempty"`              // Error message if status is "error"
+}
+
+// cmdTurn processes a single JSON chat turn from stdin and outputs JSON to stdout.
+// JSON v1 turn protocol:
+//  - Input: session UUID (or empty for new), repo, optional agent/model/image, user message, optional history
+//  - Creates new interactive session if UUID empty and session doesn't exist
+//  - Continues existing session by stable UUID
+//  - Returns structured JSON with session info, tokens, and need_history flag
+//  - Avoids writing agent text events to stdout
+func cmdTurn() error {
+	var input JSONTurnRequest
+	decoder := json.NewDecoder(os.Stdin)
+	if err := decoder.Decode(&input); err != nil {
+		response := JSONTurnResponse{
+			Status: "error",
+			Error:  fmt.Sprintf("parse input JSON: %v", err),
+		}
+		data, _ := json.Marshal(response)
+		fmt.Println(string(data))
+		return nil
+	}
+
+	if input.Message == "" {
+		response := JSONTurnResponse{
+			Status: "error",
+			Error:  "message required",
+		}
+		data, _ := json.Marshal(response)
+		fmt.Println(string(data))
+		return nil
+	}
+
+	repoRoot := input.Repo
+	if repoRoot == "" {
+		var err error
+		repoRoot, err = resolveRepoRoot()
+		if err != nil {
+			response := JSONTurnResponse{
+				Status: "error",
+				Error:  fmt.Sprintf("repo required: %v", err),
+			}
+			data, _ := json.Marshal(response)
+			fmt.Println(string(data))
+			return nil
+		}
+	}
+
+	userCfg, err := config.LoadUserConfig()
+	if err != nil {
+		response := JSONTurnResponse{
+			Status: "error",
+			Error:  fmt.Sprintf("load user config: %v", err),
+		}
+		data, _ := json.Marshal(response)
+		fmt.Println(string(data))
+		return nil
+	}
+
+	var state *config.State
+	var sessionName string
+	var isNewSession bool
+
+	// Try to find existing session by UUID
+	if input.UUID != "" {
+		sessions, err := config.ListSessions(repoRoot)
+		if err == nil {
+			for _, sn := range sessions {
+				s, err := config.Load(repoRoot, sn)
+				if err != nil {
+					continue
+				}
+				if s.Run.UUID == input.UUID {
+					state = s
+					sessionName = sn
+					break
+				}
+			}
+		}
+
+		if state == nil {
+			response := JSONTurnResponse{
+				Status: "error",
+				UUID:   input.UUID,
+				Error:  "session not found",
+			}
+			data, _ := json.Marshal(response)
+			fmt.Println(string(data))
+			return nil
+		}
+	} else {
+		// No UUID provided: create new interactive session
+		isNewSession = true
+
+		// Validate required fields for new session
+		if input.Agent == "" {
+			input.Agent = "pi"
+		}
+		if input.Model == "" {
+			input.Model = userCfg.DefaultModel
+		}
+		if input.Image == "" {
+			input.Image = userCfg.DefaultImage
+		}
+		if input.Image == "" {
+			response := JSONTurnResponse{
+				Status: "error",
+				Error:  "no docker image configured",
+			}
+			data, _ := json.Marshal(response)
+			fmt.Println(string(data))
+			return nil
+		}
+
+		// Generate session name and initialize state
+		sessionName = generateSessionName()
+		baseBranch, err := git.CurrentBranch(repoRoot)
+		if err != nil {
+			response := JSONTurnResponse{
+				Status: "error",
+				Error:  fmt.Sprintf("get current branch: %v", err),
+			}
+			data, _ := json.Marshal(response)
+			fmt.Println(string(data))
+			return nil
+		}
+		baseCommit, err := git.CurrentCommit(repoRoot)
+		if err != nil {
+			response := JSONTurnResponse{
+				Status: "error",
+				Error:  fmt.Sprintf("get current commit: %v", err),
+			}
+			data, _ := json.Marshal(response)
+			fmt.Println(string(data))
+			return nil
+		}
+
+		// Create worktree
+		repoStateDir, err := config.RepoStateDir(repoRoot)
+		if err != nil {
+			response := JSONTurnResponse{
+				Status: "error",
+				Error:  fmt.Sprintf("get repo state dir: %v", err),
+			}
+			data, _ := json.Marshal(response)
+			fmt.Println(string(data))
+			return nil
+		}
+		wtPath := filepath.Join(repoStateDir, "sessions", sessionName, "worktrees", "solve")
+		branchName := "cerberus/" + sessionName
+		if _, err := createWorktreePath(repoRoot, wtPath, branchName, baseCommit); err != nil {
+			response := JSONTurnResponse{
+				Status: "error",
+				Error:  fmt.Sprintf("create worktree: %v", err),
+			}
+			data, _ := json.Marshal(response)
+			fmt.Println(string(data))
+			return nil
+		}
+
+		// Initialize log path
+		logPath, err := config.LogPath(repoRoot, sessionName)
+		if err != nil {
+			response := JSONTurnResponse{
+				Status: "error",
+				Error:  fmt.Sprintf("get log path: %v", err),
+			}
+			data, _ := json.Marshal(response)
+			fmt.Println(string(data))
+			return nil
+		}
+		if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err != nil {
+			response := JSONTurnResponse{
+				Status: "error",
+				Error:  fmt.Sprintf("create log dir: %v", err),
+			}
+			data, _ := json.Marshal(response)
+			fmt.Println(string(data))
+			return nil
+		}
+
+		workDir, _ := os.Getwd()
+
+		// Initialize message cache with history if provided
+		var msgCache *config.MessageCache
+		if len(input.History) > 0 {
+			msgCache = &config.MessageCache{
+				Messages:        input.History,
+				ActiveMessageID: input.ActiveMessageID,
+			}
+		} else {
+			msgCache = &config.MessageCache{
+				Messages: []config.Message{},
+			}
+		}
+
+		state = &config.State{
+			Name:       sessionName,
+			BaseBranch: baseBranch,
+			BaseCommit: baseCommit,
+			Prompt:     input.Message,
+			Run: config.Run{
+				Branch:       branchName,
+				Worktree:     wtPath,
+				Agent:        input.Agent,
+				Model:        input.Model,
+				Image:        input.Image,
+				Status:       config.StatusPending,
+				LogFile:      logPath,
+				StartedAt:    time.Now(),
+				WorkDir:      workDir,
+				Interactive:  true,
+				InvokedBy:    "json-chat",
+				UUID:         config.GenerateSessionUUID(),
+				MessageCache: msgCache,
+			},
+		}
+
+		if err := config.Save(repoRoot, state); err != nil {
+			response := JSONTurnResponse{
+				Status: "error",
+				Error:  fmt.Sprintf("save state: %v", err),
+			}
+			data, _ := json.Marshal(response)
+			fmt.Println(string(data))
+			return nil
+		}
+
+		if err := config.RegisterRepo(repoRoot); err != nil {
+			fmt.Fprintf(os.Stderr, "warn: register repo: %v\n", err)
+		}
+	}
+
+	// Apply profile if specified
+	if state.Run.ProfileFile != "" {
+		p, err := config.LoadProfileFile(state.Run.ProfileFile)
+		if err != nil {
+			response := JSONTurnResponse{
+				Status: "error",
+				UUID:   state.Run.UUID,
+				Error:  fmt.Sprintf("load profile: %v", err),
+			}
+			data, _ := json.Marshal(response)
+			fmt.Println(string(data))
+			return nil
+		}
+		config.ApplyProfile(&userCfg, p)
+	}
+
+	// Check if local cache is conflicting
+	if !isNewSession && input.History != nil && len(input.History) > 0 {
+		if state.Run.MessageCache == nil || len(state.Run.MessageCache.Messages) != len(input.History) {
+			response := JSONTurnResponse{
+				Status:      "need_history",
+				UUID:        state.Run.UUID,
+				SessionID:   state.Run.SessionID,
+				NeedHistory: true,
+			}
+			data, _ := json.Marshal(response)
+			fmt.Println(string(data))
+			return nil
+		}
+	}
+
+	// For interactive sessions, need to start docker container if not already running
+	if state.Run.ContainerID == "" && !isNewSession && state.Run.Status == config.StatusWaiting {
+		// Container should already exist from initial setup, but if not, this is an error
+		response := JSONTurnResponse{
+			Status: "error",
+			UUID:   state.Run.UUID,
+			Error:  "interactive session container not running",
+		}
+		data, _ := json.Marshal(response)
+		fmt.Println(string(data))
+		return nil
+	}
+
+	// For new sessions, start the container
+	if isNewSession {
+		if err := config.RegisterRepo(repoRoot); err != nil {
+			fmt.Fprintf(os.Stderr, "warn: register repo: %v\n", err)
+		}
+
+		// Start initial agent session in docker (interactive mode)
+		emitter := buildJSONEmitter(input.CallbackURL)
+		defer emitter.Close()
+
+		state.Run.Status = config.StatusRunning
+		config.Save(repoRoot, state)
+
+		containerID, exitCode, err := startInteractiveSession(repoRoot, state, userCfg, emitter)
+		if err != nil {
+			state.Run.Status = config.StatusFailed
+			config.Save(repoRoot, state)
+			response := JSONTurnResponse{
+				Status: "error",
+				UUID:   state.Run.UUID,
+				Error:  fmt.Sprintf("start interactive session: %v", err),
+			}
+			data, _ := json.Marshal(response)
+			fmt.Println(string(data))
+			return nil
+		}
+
+		if exitCode != 0 {
+			state.Run.Status = config.StatusFailed
+			state.Run.ExitCode = exitCode
+			config.Save(repoRoot, state)
+			response := JSONTurnResponse{
+				Status: "error",
+				UUID:   state.Run.UUID,
+				Error:  fmt.Sprintf("interactive session init failed with exit code %d", exitCode),
+			}
+			data, _ := json.Marshal(response)
+			fmt.Println(string(data))
+			return nil
+		}
+
+		state.Run.ContainerID = containerID
+		state.Run.Status = config.StatusWaiting
+		config.Save(repoRoot, state)
+	}
+
+	// Run the turn
+	emitter := buildJSONEmitter(input.CallbackURL)
+	defer emitter.Close()
+
+	state.Run.Status = config.StatusRunning
+	config.Save(repoRoot, state)
+
+	exitCode, err := runTurnViaExecJSON(repoRoot, state, input.Message, userCfg, emitter)
+	if err != nil {
+		state.Run.Status = config.StatusFailed
+		config.Save(repoRoot, state)
+		response := JSONTurnResponse{
+			Status: "error",
+			UUID:   state.Run.UUID,
+			Error:  fmt.Sprintf("run turn: %v", err),
+		}
+		data, _ := json.Marshal(response)
+		fmt.Println(string(data))
+		return nil
+	}
+
+	if exitCode != 0 {
+		state.Run.Status = config.StatusFailed
+		state.Run.ExitCode = exitCode
+		config.Save(repoRoot, state)
+		response := JSONTurnResponse{
+			Status: "error",
+			UUID:   state.Run.UUID,
+			Error:  fmt.Sprintf("turn exited with code %d", exitCode),
+		}
+		data, _ := json.Marshal(response)
+		fmt.Println(string(data))
+		return nil
+	}
+
+	// Store new user message in cache
+	if state.Run.MessageCache == nil {
+		state.Run.MessageCache = &config.MessageCache{
+			Messages: []config.Message{},
+		}
+	}
+
+	userMsgID := generateUUID()
+	newMsg := config.Message{
+		ID:       userMsgID,
+		Role:     "user",
+		Content:  input.Message,
+		ParentID: input.ActiveMessageID,
+	}
+	state.Run.MessageCache.Messages = append(state.Run.MessageCache.Messages, newMsg)
+	state.Run.MessageCache.ActiveMessageID = userMsgID
+
+	state.Run.Status = config.StatusWaiting
+	if err := config.Save(repoRoot, state); err != nil {
+		response := JSONTurnResponse{
+			Status: "error",
+			UUID:   state.Run.UUID,
+			Error:  fmt.Sprintf("save state: %v", err),
+		}
+		data, _ := json.Marshal(response)
+		fmt.Println(string(data))
+		return nil
+	}
+
+	// Generate response
+	response := JSONTurnResponse{
+		Status:           "ok",
+		UUID:             state.Run.UUID,
+		SessionID:        state.Run.SessionID,
+		ActiveMessageID:  userMsgID,
+		AssistantMessage: "pending",
+		InputTokens:      state.Run.InputTokens,
+		OutputTokens:     state.Run.OutputTokens,
+		CacheReadTokens:  state.Run.CacheReadTokens,
+		CacheWriteTokens: state.Run.CacheWriteTokens,
+		CostUSD:          state.Run.CostUSD,
+	}
+	data, _ := json.Marshal(response)
+	fmt.Println(string(data))
+	return nil
+}
+
+// startInteractiveSession initializes a docker container for interactive agent execution.
+func startInteractiveSession(repoRoot string, state *config.State, userCfg config.UserConfig, emitter event.Emitter) (string, int, error) {
+	agentImpl, err := agent.Get(state.Run.Agent)
+	if err != nil {
+		return "", 1, err
+	}
+
+	cmdArgs, err := agentImpl.Args(agent.RunArgs{
+		Prompt:      state.Prompt,
+		Model:       state.Run.Model,
+		Interactive: true,
+	})
+	if err != nil {
+		return "", 1, fmt.Errorf("build command: %w", err)
+	}
+
+	logFile, err := os.Create(state.Run.LogFile)
+	if err != nil {
+		return "", 1, fmt.Errorf("create log file: %w", err)
+	}
+	defer logFile.Close()
+
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return "", 1, fmt.Errorf("get home dir: %w", err)
+	}
+
+	mounts := []docker.Mount{
+		{Host: state.Run.Worktree, Container: "/workspace"},
+		{Host: filepath.Join(homeDir, ".pi", "agent"), Container: "/home/agent/.pi/agent"},
+	}
+
+	gradleInitD := filepath.Join(homeDir, ".gradle", "init.d")
+	if _, err := os.Stat(gradleInitD); err == nil {
+		mounts = append(mounts, docker.Mount{Host: gradleInitD, Container: "/home/agent/.gradle/init.d", ReadOnly: true})
+	}
+
+	awsDir := filepath.Join(homeDir, ".aws")
+	if _, err := os.Stat(awsDir); err == nil {
+		mounts = append(mounts, docker.Mount{Host: awsDir, Container: "/home/agent/.aws", ReadOnly: true})
+	}
+
+	if err := ensureCopilotToken(); err != nil {
+		return "", 0, fmt.Errorf("copilot token refresh: %w", err)
+	}
+
+	if err := requireProxyNetwork(); err != nil {
+		return "", 0, err
+	}
+
+	envFile := agentEnvFilePath()
+
+	pipeR, pipeW := io.Pipe()
+
+	ctx, cancelRun := context.WithCancel(context.Background())
+	defer cancelRun()
+
+	proc := stream.NewProcessor(state.Name, emitter, logFile, stream.Limits{
+		MaxTurns:        userCfg.EffectiveMaxTurns(),
+		MaxOutputTokens: userCfg.EffectiveMaxOutputTokens(),
+	}, cancelRun)
+
+	go func() {
+		defer pipeR.Close()
+		proc.Process(pipeR)
+	}()
+
+	awsEnv := map[string]string{
+		"AWS_PROFILE":           userCfg.AWSProfile,
+		"AWS_REGION":            userCfg.AWSRegion,
+		"AWS_DEFAULT_REGION":    userCfg.AWSRegion,
+		"AWS_ACCESS_KEY_ID":     "",
+		"AWS_SECRET_ACCESS_KEY": "",
+		"AWS_SESSION_TOKEN":     "",
+	}
+	var envVars []string
+	for key, cfgVal := range awsEnv {
+		if val := os.Getenv(key); val != "" {
+			envVars = append(envVars, key+"="+val)
+		} else if cfgVal != "" {
+			envVars = append(envVars, key+"="+cfgVal)
+		}
+	}
+	envVars = append(envVars, "PI_CODING_AGENT_SESSION_DIR=/tmp/pi-sessions")
+	for k, v := range userCfg.ExtraEnv {
+		envVars = append(envVars, k+"="+v)
+	}
+
+	runArgs := docker.RunArgs{
+		Image:    state.Run.Image,
+		Workdir:  "/workspace",
+		Mounts:   mounts,
+		Cmd:      cmdArgs,
+		Env:      envVars,
+		EnvFile:  envFile,
+		Networks: []string{"sandbox-internal"},
+		Stdout:   pipeW,
+		Stderr:   pipeW,
+	}
+
+	containerID, exitCode, err := docker.Run(ctx, runArgs)
+	pipeW.Close()
+
+	stats := proc.Stats()
+	if stats.SessionID != "" {
+		state.Run.SessionID = stats.SessionID
+	}
+	state.Run.InputTokens = stats.InputTokens
+	state.Run.OutputTokens = stats.OutputTokens
+	state.Run.CacheReadTokens = stats.CacheReadTokens
+	state.Run.CacheWriteTokens = stats.CacheWriteTokens
+	state.Run.CostUSD = stats.CostUSD
+	config.Save(repoRoot, state)
+
+	emitter.Close()
+
+	if err != nil {
+		return containerID, exitCode, fmt.Errorf("docker run: %w", err)
+	}
+
+	return containerID, exitCode, nil
+}
+
+// Helper functions (stubs) - these were removed but need to be present
+// as they're called from rootCmd setup, even though they may have been reimplemented above
+
+// cmdTurnCommand creates a cobra command for the "turn" subcommand.
 func cmdTurnCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "turn",
@@ -1679,6 +2343,7 @@ func cmdTurnCommand() *cobra.Command {
 	return cmd
 }
 
+// cmdSessionsCommand creates a cobra command for the "sessions" subcommand.
 func cmdSessionsCommand() *cobra.Command {
 	var jsonFlag bool
 
@@ -1693,159 +2358,4 @@ func cmdSessionsCommand() *cobra.Command {
 	cmd.Flags().BoolVar(&jsonFlag, "json", false, "output as JSON array")
 
 	return cmd
-}
-
-// cmdTurn processes a single JSON chat turn from stdin and outputs JSON to stdout.
-// Input JSON format: {"session_id": "uuid", "message": "user message", "repo": "/path/to/repo"}
-// Output JSON format: {"status": "ok|need_history", "output": "...", "session_id": "uuid", ...}
-func cmdTurn() error {
-	var input struct {
-		SessionID string `json:"session_id"`
-		Message   string `json:"message"`
-		Repo      string `json:"repo"`
-	}
-
-	decoder := json.NewDecoder(os.Stdin)
-	if err := decoder.Decode(&input); err != nil {
-		return fmt.Errorf("parse input JSON: %w", err)
-	}
-
-	if input.SessionID == "" {
-		return fmt.Errorf("session_id required")
-	}
-	if input.Message == "" {
-		return fmt.Errorf("message required")
-	}
-
-	repoRoot := input.Repo
-	if repoRoot == "" {
-		var err error
-		repoRoot, err = resolveRepoRoot()
-		if err != nil {
-			return fmt.Errorf("repo required: %w", err)
-		}
-	}
-
-	// Find session by UUID in the repo
-	sessions, err := config.ListSessions(repoRoot)
-	if err != nil {
-		return fmt.Errorf("list sessions: %w", err)
-	}
-
-	var sessionName string
-	for _, sn := range sessions {
-		state, err := config.Load(repoRoot, sn)
-		if err != nil {
-			continue
-		}
-		if state.Run.UUID == input.SessionID {
-			sessionName = sn
-			break
-		}
-	}
-
-	if sessionName == "" {
-		output := map[string]interface{}{
-			"status": "error",
-			"error":  "session not found",
-		}
-		data, _ := json.Marshal(output)
-		fmt.Println(string(data))
-		return nil
-	}
-
-	state, err := config.Load(repoRoot, sessionName)
-	if err != nil {
-		output := map[string]interface{}{
-			"status": "error",
-			"error":  fmt.Sprintf("load session: %v", err),
-		}
-		data, _ := json.Marshal(output)
-		fmt.Println(string(data))
-		return nil
-	}
-
-	// Check if local message history exists
-	if len(state.Run.MessageHistory) == 0 && state.Run.Status != config.StatusPending {
-		output := map[string]interface{}{
-			"status":  "need_history",
-			"uuid":    state.Run.UUID,
-			"message": "local history unavailable",
-		}
-		data, _ := json.Marshal(output)
-		fmt.Println(string(data))
-		return nil
-	}
-
-	userCfg, err := config.LoadUserConfig()
-	if err != nil {
-		return err
-	}
-
-	if state.Run.ProfileFile != "" {
-		p, err := config.LoadProfileFile(state.Run.ProfileFile)
-		if err != nil {
-			return err
-		}
-		config.ApplyProfile(&userCfg, p)
-	}
-
-	// Run turn and capture output
-	emitter := event.NewTextEmitter(sessionName)
-	defer emitter.Close()
-
-	state.Run.Status = config.StatusRunning
-	config.Save(repoRoot, state)
-
-	exitCode, err := runTurnViaExec(repoRoot, state, input.Message, userCfg, emitter)
-	if err != nil {
-		state.Run.Status = config.StatusFailed
-		config.Save(repoRoot, state)
-		output := map[string]interface{}{
-			"status": "error",
-			"uuid":   state.Run.UUID,
-			"error":  fmt.Sprintf("run turn: %v", err),
-		}
-		data, _ := json.Marshal(output)
-		fmt.Println(string(data))
-		return nil
-	}
-
-	if exitCode != 0 {
-		state.Run.Status = config.StatusFailed
-		state.Run.ExitCode = exitCode
-		config.Save(repoRoot, state)
-		output := map[string]interface{}{
-			"status":    "error",
-			"uuid":      state.Run.UUID,
-			"exit_code": exitCode,
-		}
-		data, _ := json.Marshal(output)
-		fmt.Println(string(data))
-		return nil
-	}
-
-	state.Run.Status = config.StatusWaiting
-	if err := config.Save(repoRoot, state); err != nil {
-		return fmt.Errorf("save state: %w", err)
-	}
-
-	// Append message to history
-	state.Run.MessageHistory = append(state.Run.MessageHistory, input.Message)
-	config.Save(repoRoot, state)
-
-	output := map[string]interface{}{
-		"status":             "ok",
-		"uuid":               state.Run.UUID,
-		"session_id":         state.Run.SessionID,
-		"status_code":        "waiting",
-		"cost_usd":           state.Run.CostUSD,
-		"input_tokens":       state.Run.InputTokens,
-		"output_tokens":      state.Run.OutputTokens,
-		"cache_read_tokens":  state.Run.CacheReadTokens,
-		"cache_write_tokens": state.Run.CacheWriteTokens,
-	}
-	data, _ := json.Marshal(output)
-	fmt.Println(string(data))
-	return nil
 }
