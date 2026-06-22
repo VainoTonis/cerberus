@@ -1,6 +1,7 @@
 package config
 
 import (
+	"crypto/md5"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -99,6 +100,15 @@ func CerberusHome() (string, error) {
 	return filepath.Join(homeDir, ".cerberus"), nil
 }
 
+// GenerateSessionUUID creates a stable UUID for a session based on repo root and session name.
+func GenerateSessionUUID(repoRoot, sessionName string) string {
+	// Use MD5 hash of repoRoot:sessionName to generate a stable UUID-like identifier
+	h := md5.Sum([]byte(repoRoot + ":" + sessionName))
+	// Format as UUID-like string (8-4-4-4-12 hex digits)
+	hex := hex.EncodeToString(h[:])
+	return fmt.Sprintf("%s-%s-%s-%s-%s", hex[0:8], hex[8:12], hex[12:16], hex[16:20], hex[20:32])
+}
+
 // RepoStateDir computes the state directory for a repository.
 // It returns ~/.cerberus/repos/<basename>-<hash6> where hash6 is the first 6 hex chars
 // of the SHA256 hash of the repoRoot path.
@@ -171,14 +181,18 @@ type Run struct {
 	WorkDir          string    `json:"work_dir,omitempty"`
 	InvokedBy        string    `json:"invoked_by,omitempty"`
 	Orchestrator     string    `json:"orchestrator,omitempty"`
+	UUID             string    `json:"uuid,omitempty"`
+	MessageHistory   []string  `json:"message_history,omitempty"`
+	CheckpointSlot   string    `json:"checkpoint_slot,omitempty"`
 }
 
 type State struct {
-	Name       string `json:"name"`
-	BaseBranch string `json:"base_branch"`
-	BaseCommit string `json:"base_commit"`
-	Prompt     string `json:"prompt"`
-	Run        Run    `json:"run"`
+	Name        string `json:"name"`
+	BaseBranch  string `json:"base_branch"`
+	BaseCommit  string `json:"base_commit"`
+	Prompt      string `json:"prompt"`
+	Run         Run    `json:"run"`
+	ParentMsgID string `json:"parent_msg_id,omitempty"`
 }
 
 // sessionDir returns the directory for a named session's state.
@@ -451,4 +465,3 @@ func LoadRepoRegistry() ([]string, error) {
 	}
 	return repos, nil
 }
-

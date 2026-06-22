@@ -67,7 +67,7 @@ type piEvent struct {
 		Type     string `json:"type"`
 		Delta    string `json:"delta"`
 		ToolCall struct {
-			Name      string      `json:"name"`
+			Name      string                 `json:"name"`
 			Arguments map[string]interface{} `json:"arguments"`
 		} `json:"toolCall"`
 	} `json:"assistantMessageEvent"`

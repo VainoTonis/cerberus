@@ -41,16 +41,14 @@ func main() {
 	rootCmd.AddCommand(
 		cmdStartCommand(),
 		cmdRerunCommand(),
-		cmdChatCommand(),
-		cmdMessageCommand(),
-		cmdCloseCommand(),
+		cmdTurnCommand(),
 		cmdStatusCommand(),
 		cmdLogsCommand(),
 		cmdReviewCommand(),
 		cmdCleanCommand(),
 		cmdApplyCommand(),
 		cmdStatsCommand(),
-		cmdPsCommand(),
+		cmdSessionsCommand(),
 		cmdVersionCommand(),
 	)
 
@@ -298,7 +296,7 @@ func relativeTime(t time.Time) string {
 	}
 }
 
-// cmdPs lists all sessions in a table format.
+// psEntry represents a session entry for listing.
 type psEntry struct {
 	repo        string
 	sessionName string
@@ -306,7 +304,8 @@ type psEntry struct {
 	loadErr     error
 }
 
-func cmdPs() error {
+// cmdSessions lists all sessions, optionally as JSON.
+func cmdSessions(jsonFlag bool) error {
 	// Collect repos to scan: registry + current repo (if resolvable).
 	seen := map[string]bool{}
 	var repos []string
@@ -337,12 +336,39 @@ func cmdPs() error {
 		}
 	}
 
+	if jsonFlag {
+		// Output as JSON array
+		var jsonEntries []map[string]interface{}
+		for _, e := range entries {
+			if e.loadErr != nil {
+				continue
+			}
+			r := &e.state.Run
+			entry := map[string]interface{}{
+				"name":        e.sessionName,
+				"status":      r.Status,
+				"model":       r.Model,
+				"agent":       r.Agent,
+				"repo":        e.repo,
+				"uuid":        r.UUID,
+				"session_id":  r.SessionID,
+				"commit_hash": r.CommitHash,
+				"cost_usd":    r.CostUSD,
+				"started_at":  r.StartedAt,
+			}
+			jsonEntries = append(jsonEntries, entry)
+		}
+		data, _ := json.Marshal(jsonEntries)
+		fmt.Println(string(data))
+		return nil
+	}
+
+	// Text table output (original behavior)
 	if len(entries) == 0 {
 		fmt.Println("no sessions")
 		return nil
 	}
 
-	// Print table header
 	fmt.Printf("%-20s  %-22s  %-15s  %-10s  %-12s  %s\n",
 		"NAME", "STATUS", "MODEL", "AGENT", "STARTED", "REPO")
 	fmt.Println(strings.Repeat("-", 100))
@@ -383,18 +409,6 @@ func cmdPs() error {
 	}
 
 	return nil
-}
-
-func cmdPsCommand() *cobra.Command {
-	cmd := &cobra.Command{
-		Use:   "ps",
-		Short: "List all sessions",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			return cmdPs()
-		},
-	}
-
-	return cmd
 }
 
 func completionSessions(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
@@ -573,18 +587,19 @@ func cmdStart(sessionName, prompt, promptFile, agentFlag, modelFlag, imageFlag, 
 		BaseCommit: baseCommit,
 		Prompt:     resolvedPrompt,
 		Run: config.Run{
-			Branch:      branchName,
-			Worktree:    wtPath,
-			Agent:       agentFlag,
-			Model:       model,
-			Image:       image,
-			ProfileFile: profileFile,
-			Status:      config.StatusPending,
-			LogFile:     logPath,
-			StartedAt:   time.Now(),
-			WorkDir:     workDir,
-			InvokedBy:   invoker,
+			Branch:       branchName,
+			Worktree:     wtPath,
+			Agent:        agentFlag,
+			Model:        model,
+			Image:        image,
+			ProfileFile:  profileFile,
+			Status:       config.StatusPending,
+			LogFile:      logPath,
+			StartedAt:    time.Now(),
+			WorkDir:      workDir,
+			InvokedBy:    invoker,
 			Orchestrator: orchestrator,
+			UUID:         config.GenerateSessionUUID(repoRoot, sessionName),
 		},
 	}
 
@@ -1579,7 +1594,6 @@ func buildInteractiveEnvVars(userCfg config.UserConfig) []string {
 			envVars = append(envVars, key+"="+cfgVal)
 		}
 	}
-	// The pi session dir is mounted at /tmp/pi-sessions in the container via the volume mount.
 	envVars = append(envVars, "PI_CODING_AGENT_SESSION_DIR=/tmp/pi-sessions")
 	for k, v := range userCfg.ExtraEnv {
 		envVars = append(envVars, k+"="+v)
@@ -1588,7 +1602,6 @@ func buildInteractiveEnvVars(userCfg config.UserConfig) []string {
 }
 
 // runTurnViaExec runs a single agent turn inside an already-running container via docker exec.
-// It streams output through the emitter, accumulates token usage into state, and saves state.
 func runTurnViaExec(repoRoot string, state *config.State, prompt string, userCfg config.UserConfig, emitter event.Emitter) (int, error) {
 	agentImpl, err := agent.Get(state.Run.Agent)
 	if err != nil {
@@ -1655,312 +1668,113 @@ func runTurnViaExec(repoRoot string, state *config.State, prompt string, userCfg
 	return exitCode, nil
 }
 
-func cmdChatCommand() *cobra.Command {
-	var name, prompt, promptFile, agentFlag, modelFlag, imageFlag, profileFile string
-	var outputFlag, callbackFlag string
+func cmdTurnCommand() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "turn",
+		Short: "Execute a single JSON chat turn with stdin/stdout",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return cmdTurn()
+		},
+	}
+	return cmd
+}
+
+func cmdSessionsCommand() *cobra.Command {
+	var jsonFlag bool
 
 	cmd := &cobra.Command{
-		Use:   "chat",
-		Short: "Start an interactive session with a long-lived container",
+		Use:   "sessions",
+		Short: "List all sessions",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return cmdChat(name, prompt, promptFile, agentFlag, modelFlag, imageFlag, profileFile, outputFlag, callbackFlag)
+			return cmdSessions(jsonFlag)
 		},
 	}
 
-	cmd.Flags().StringVar(&name, "name", "", "session name (auto-generated if empty)")
-	cmd.Flags().StringVar(&prompt, "prompt", "", "initial prompt to send to the agent (required)")
-	cmd.Flags().StringVar(&promptFile, "prompt-file", "", "read prompt from file instead of --prompt")
-	cmd.Flags().StringVar(&agentFlag, "agent", "pi", "agent to use (default: pi)")
-	cmd.Flags().StringVar(&modelFlag, "model", "", "model to use (default from config or agent)")
-	cmd.Flags().StringVar(&imageFlag, "image", "", "docker image (default from config)")
-	cmd.Flags().StringVar(&profileFile, "profile-file", "", "path to a profile JSON file to override model, image, and env vars")
-	cmd.Flags().StringVar(&outputFlag, "output", "text", "output format: text (default) or jsonl")
-	cmd.Flags().StringVar(&callbackFlag, "callback", "", "URL to POST events to as they happen")
+	cmd.Flags().BoolVar(&jsonFlag, "json", false, "output as JSON array")
 
 	return cmd
 }
 
-func cmdMessageCommand() *cobra.Command {
-	var name, message string
-	var outputFlag, callbackFlag string
-
-	cmd := &cobra.Command{
-		Use:   "message",
-		Short: "Send a follow-up message to a waiting interactive session",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			return cmdMessage(name, message, outputFlag, callbackFlag)
-		},
+// cmdTurn processes a single JSON chat turn from stdin and outputs JSON to stdout.
+// Input JSON format: {"session_id": "uuid", "message": "user message", "repo": "/path/to/repo"}
+// Output JSON format: {"status": "ok|need_history", "output": "...", "session_id": "uuid", ...}
+func cmdTurn() error {
+	var input struct {
+		SessionID string `json:"session_id"`
+		Message   string `json:"message"`
+		Repo      string `json:"repo"`
 	}
 
-	cmd.Flags().StringVar(&name, "name", "", "session name (required if multiple sessions exist)")
-	cmd.Flags().StringVar(&message, "message", "", "message to send to the agent (required)")
-	cmd.Flags().StringVar(&outputFlag, "output", "text", "output format: text (default) or jsonl")
-	cmd.Flags().StringVar(&callbackFlag, "callback", "", "URL to POST events to as they happen")
-
-	cmd.RegisterFlagCompletionFunc("name", completionSessions)
-
-	return cmd
-}
-
-func cmdCloseCommand() *cobra.Command {
-	var name string
-
-	cmd := &cobra.Command{
-		Use:   "close",
-		Short: "Commit changes and clean up an interactive session",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			repoRoot, err := resolveRepoRoot()
-			if err != nil {
-				return err
-			}
-			return cmdClose(repoRoot, name)
-		},
+	decoder := json.NewDecoder(os.Stdin)
+	if err := decoder.Decode(&input); err != nil {
+		return fmt.Errorf("parse input JSON: %w", err)
 	}
 
-	cmd.Flags().StringVar(&name, "name", "", "session name (required if multiple sessions exist)")
-
-	cmd.RegisterFlagCompletionFunc("name", completionSessions)
-
-	return cmd
-}
-
-// cmdChat creates a worktree and a long-lived container, then runs the first agent turn.
-func cmdChat(sessionName, prompt, promptFile, agentFlag, modelFlag, imageFlag, profileFile, output, callback string) error {
-	userCfg, err := config.LoadUserConfig()
-	if err != nil {
-		return err
+	if input.SessionID == "" {
+		return fmt.Errorf("session_id required")
+	}
+	if input.Message == "" {
+		return fmt.Errorf("message required")
 	}
 
-	if profileFile != "" {
-		p, err := config.LoadProfileFile(profileFile)
+	repoRoot := input.Repo
+	if repoRoot == "" {
+		var err error
+		repoRoot, err = resolveRepoRoot()
 		if err != nil {
-			return err
+			return fmt.Errorf("repo required: %w", err)
 		}
-		config.ApplyProfile(&userCfg, p)
+	}
+
+	// Find session by UUID in the repo
+	sessions, err := config.ListSessions(repoRoot)
+	if err != nil {
+		return fmt.Errorf("list sessions: %w", err)
+	}
+
+	var sessionName string
+	for _, sn := range sessions {
+		state, err := config.Load(repoRoot, sn)
+		if err != nil {
+			continue
+		}
+		if state.Run.UUID == input.SessionID {
+			sessionName = sn
+			break
+		}
 	}
 
 	if sessionName == "" {
-		sessionName = generateSessionName()
-	}
-
-	resolvedPrompt := strings.TrimSpace(prompt)
-	if promptFile != "" {
-		data, err := os.ReadFile(promptFile)
-		if err != nil {
-			return fmt.Errorf("read prompt file: %w", err)
+		output := map[string]interface{}{
+			"status": "error",
+			"error":  "session not found",
 		}
-		resolvedPrompt = strings.TrimSpace(string(data))
-	}
-	if resolvedPrompt == "" {
-		return fmt.Errorf("--prompt or --prompt-file is required")
-	}
-
-	if userCfg.Instructions != "" {
-		resolvedPrompt = userCfg.Instructions + "\n\n" + resolvedPrompt
-	}
-
-	if _, err := agent.Get(agentFlag); err != nil {
-		return err
-	}
-
-	model := modelFlag
-	if model == "" {
-		model = userCfg.DefaultModel
-	}
-
-	image := imageFlag
-	if image == "" {
-		image = userCfg.DefaultImage
-	}
-	if image == "" {
-		return fmt.Errorf("no docker image configured; use --image or set default_image in ~/.config/cerberus/config.json")
-	}
-
-	repoRoot, err := resolveRepoRoot()
-	if err != nil {
-		return err
-	}
-
-	if _, err := config.Load(repoRoot, sessionName); err == nil {
-		return fmt.Errorf("session %q already exists; run 'cerberus clean --name %s' first", sessionName, sessionName)
-	}
-
-	baseBranch, err := git.CurrentBranch(repoRoot)
-	if err != nil {
-		return err
-	}
-	baseCommit, err := git.CurrentCommit(repoRoot)
-	if err != nil {
-		return err
-	}
-
-	repoStateDir, err := config.RepoStateDir(repoRoot)
-	if err != nil {
-		return fmt.Errorf("get repo state dir: %w", err)
-	}
-	wtPath := filepath.Join(repoStateDir, "sessions", sessionName, "worktrees", "solve")
-	branchName := "cerberus/" + sessionName
-
-	if _, err := createWorktreePath(repoRoot, wtPath, branchName, baseCommit); err != nil {
-		return fmt.Errorf("create worktree: %w", err)
-	}
-
-	logPath, err := config.LogPath(repoRoot, sessionName)
-	if err != nil {
-		return fmt.Errorf("get log path: %w", err)
-	}
-	if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err != nil {
-		return fmt.Errorf("create log dir: %w", err)
-	}
-
-	// Create the pi session dir on the host so the mount source exists.
-	piSessDir, err := config.PiSessionDir(repoRoot, sessionName)
-	if err != nil {
-		return fmt.Errorf("get pi session dir: %w", err)
-	}
-	if err := os.MkdirAll(piSessDir, 0o755); err != nil {
-		return fmt.Errorf("create pi session dir: %w", err)
-	}
-
-	state := &config.State{
-		Name:       sessionName,
-		BaseBranch: baseBranch,
-		BaseCommit: baseCommit,
-		Prompt:     resolvedPrompt,
-		Run: config.Run{
-			Branch:      branchName,
-			Worktree:    wtPath,
-			Agent:       agentFlag,
-			Model:       model,
-			Image:       image,
-			ProfileFile: profileFile,
-			Interactive: true,
-			Status:      config.StatusPending,
-			LogFile:     logPath,
-			StartedAt:   time.Now(),
-		},
-	}
-
-	if err := config.Save(repoRoot, state); err != nil {
-		return fmt.Errorf("save state: %w", err)
-	}
-	if err := config.RegisterRepo(repoRoot); err != nil {
-		fmt.Fprintf(os.Stderr, "warn: register repo: %v\n", err)
-	}
-
-	fmt.Printf("session: %s\n", sessionName)
-	fmt.Printf("branch:  %s (%s)\n", baseBranch, baseCommit[:8])
-	fmt.Printf("agent:   %s (interactive)\n\n", agentFlag)
-
-	// Build mounts for the long-lived container.
-	homeDir, err := os.UserHomeDir()
-	if err != nil {
-		return fmt.Errorf("get home dir: %w", err)
-	}
-
-	mounts := []docker.Mount{
-		{Host: wtPath, Container: "/workspace"},
-		{Host: filepath.Join(homeDir, ".pi", "agent"), Container: "/home/agent/.pi/agent"},
-		{Host: piSessDir, Container: "/tmp/pi-sessions"},
-	}
-
-	gradleInitD := filepath.Join(homeDir, ".gradle", "init.d")
-	if _, err := os.Stat(gradleInitD); err == nil {
-		mounts = append(mounts, docker.Mount{Host: gradleInitD, Container: "/home/agent/.gradle/init.d", ReadOnly: true})
-	}
-
-	awsDir := filepath.Join(homeDir, ".aws")
-	if _, err := os.Stat(awsDir); err == nil {
-		mounts = append(mounts, docker.Mount{Host: awsDir, Container: "/home/agent/.aws", ReadOnly: true})
-	}
-
-	envVars := buildInteractiveEnvVars(userCfg)
-
-	// Ensure Copilot token is refreshed before launching container
-	if err := ensureCopilotToken(); err != nil {
-		return fmt.Errorf("copilot token refresh: %w", err)
-	}
-
-	// Require proxy network — fail early if proxy stack isn't running.
-	if err := requireProxyNetwork(); err != nil {
-		return err
-	}
-
-	containerID, err := docker.Start(context.Background(), docker.StartArgs{
-		Image:    image,
-		Workdir:  "/workspace",
-		Mounts:   mounts,
-		Env:      envVars,
-		EnvFile:  agentEnvFilePath(),
-		Networks: []string{"sandbox-internal"},
-	})
-	if err != nil {
-		return fmt.Errorf("start container: %w", err)
-	}
-
-	state.Run.ContainerID = containerID
-	state.Run.Status = config.StatusRunning
-	if err := config.Save(repoRoot, state); err != nil {
-		return fmt.Errorf("save state: %w", err)
-	}
-
-	emitter := buildEmitter(sessionName, output, callback)
-	defer emitter.Close()
-
-	exitCode, err := runTurnViaExec(repoRoot, state, resolvedPrompt, userCfg, emitter)
-	if err != nil {
-		state.Run.Status = config.StatusFailed
-		config.Save(repoRoot, state)
-		return err
-	}
-
-	if exitCode != 0 {
-		state.Run.Status = config.StatusFailed
-		state.Run.ExitCode = exitCode
-		config.Save(repoRoot, state)
-		return fmt.Errorf("agent exited with code %d", exitCode)
-	}
-
-	state.Run.Status = config.StatusWaiting
-	if err := config.Save(repoRoot, state); err != nil {
-		return fmt.Errorf("save state: %w", err)
-	}
-
-	e := event.New(event.TurnComplete, sessionName)
-	e.Status = "waiting"
-	emitter.Emit(e)
-
-	fmt.Printf("\n[%s] waiting for next message — use 'cerberus message --name %s'\n", sessionName, sessionName)
-	return nil
-}
-
-// cmdMessage sends a follow-up message to a waiting interactive session.
-func cmdMessage(name, message, output, callback string) error {
-	if message == "" {
-		return fmt.Errorf("--message is required")
-	}
-
-	repoRoot, err := resolveRepoRoot()
-	if err != nil {
-		return err
-	}
-
-	sessionName, err := resolveSession(repoRoot, name)
-	if err != nil {
-		return err
+		data, _ := json.Marshal(output)
+		fmt.Println(string(data))
+		return nil
 	}
 
 	state, err := config.Load(repoRoot, sessionName)
 	if err != nil {
-		return err
+		output := map[string]interface{}{
+			"status": "error",
+			"error":  fmt.Sprintf("load session: %v", err),
+		}
+		data, _ := json.Marshal(output)
+		fmt.Println(string(data))
+		return nil
 	}
 
-	if !state.Run.Interactive {
-		return fmt.Errorf("session %q is not an interactive session; use 'cerberus rerun' instead", sessionName)
-	}
-
-	if state.Run.Status != config.StatusWaiting {
-		return fmt.Errorf("session %q is not waiting (status: %s)", sessionName, state.Run.Status)
+	// Check if local message history exists
+	if len(state.Run.MessageHistory) == 0 && state.Run.Status != config.StatusPending {
+		output := map[string]interface{}{
+			"status":  "need_history",
+			"uuid":    state.Run.UUID,
+			"message": "local history unavailable",
+		}
+		data, _ := json.Marshal(output)
+		fmt.Println(string(data))
+		return nil
 	}
 
 	userCfg, err := config.LoadUserConfig()
@@ -1976,26 +1790,39 @@ func cmdMessage(name, message, output, callback string) error {
 		config.ApplyProfile(&userCfg, p)
 	}
 
-	emitter := buildEmitter(sessionName, output, callback)
+	// Run turn and capture output
+	emitter := event.NewTextEmitter(sessionName)
 	defer emitter.Close()
 
 	state.Run.Status = config.StatusRunning
-	if err := config.Save(repoRoot, state); err != nil {
-		return fmt.Errorf("save state: %w", err)
-	}
+	config.Save(repoRoot, state)
 
-	exitCode, err := runTurnViaExec(repoRoot, state, message, userCfg, emitter)
+	exitCode, err := runTurnViaExec(repoRoot, state, input.Message, userCfg, emitter)
 	if err != nil {
 		state.Run.Status = config.StatusFailed
 		config.Save(repoRoot, state)
-		return err
+		output := map[string]interface{}{
+			"status": "error",
+			"uuid":   state.Run.UUID,
+			"error":  fmt.Sprintf("run turn: %v", err),
+		}
+		data, _ := json.Marshal(output)
+		fmt.Println(string(data))
+		return nil
 	}
 
 	if exitCode != 0 {
 		state.Run.Status = config.StatusFailed
 		state.Run.ExitCode = exitCode
 		config.Save(repoRoot, state)
-		return fmt.Errorf("agent exited with code %d", exitCode)
+		output := map[string]interface{}{
+			"status":    "error",
+			"uuid":      state.Run.UUID,
+			"exit_code": exitCode,
+		}
+		data, _ := json.Marshal(output)
+		fmt.Println(string(data))
+		return nil
 	}
 
 	state.Run.Status = config.StatusWaiting
@@ -2003,62 +1830,22 @@ func cmdMessage(name, message, output, callback string) error {
 		return fmt.Errorf("save state: %w", err)
 	}
 
-	e := event.New(event.TurnComplete, sessionName)
-	e.Status = "waiting"
-	emitter.Emit(e)
-
-	fmt.Printf("\n[%s] waiting — use 'cerberus message' or 'cerberus close' to finish\n", sessionName)
-	return nil
-}
-
-// cmdClose commits any changes in an interactive session and cleans it up.
-func cmdClose(repoRoot, name string) error {
-	sessionName, err := resolveSession(repoRoot, name)
-	if err != nil {
-		return err
-	}
-
-	state, err := config.Load(repoRoot, sessionName)
-	if err != nil {
-		return err
-	}
-
-	if !state.Run.Interactive {
-		return fmt.Errorf("session %q is not an interactive session; use 'cerberus clean' instead", sessionName)
-	}
-
-	if state.Run.Status == config.StatusRunning {
-		return fmt.Errorf("session %q is still running; wait for it to finish first", sessionName)
-	}
-
-	hasChanges, err := git.HasChanges(state.Run.Worktree)
-	if err != nil {
-		return fmt.Errorf("check changes: %w", err)
-	}
-
-	if hasChanges {
-		fmt.Printf("[%s] committing...\n", sessionName)
-
-		diff, _ := git.StageAndDiff(state.Run.Worktree, state.BaseCommit)
-		commitMsg := agent.AskForCommitMessage(state.Run.Worktree, diff, state.Run.Model, state.Run.Orchestrator)
-		commitHash, err := git.CommitAndGetHash(state.Run.Worktree, commitMsg)
-		if err != nil {
-			return fmt.Errorf("commit failed: %w", err)
-		}
-
-		state.Run.CommitHash = commitHash
-		fmt.Printf("[%s] commit %s  %s\n", sessionName, commitHash[:8], commitMsg)
-	} else {
-		fmt.Printf("[%s] no changes to commit\n", sessionName)
-	}
-
-	state.Run.Status = config.StatusDone
-	state.Run.FinishedAt = time.Now()
+	// Append message to history
+	state.Run.MessageHistory = append(state.Run.MessageHistory, input.Message)
 	config.Save(repoRoot, state)
 
-	if err := appendStats(state); err != nil {
-		fmt.Fprintf(os.Stderr, "warning: append stats: %v\n", err)
+	output := map[string]interface{}{
+		"status":             "ok",
+		"uuid":               state.Run.UUID,
+		"session_id":         state.Run.SessionID,
+		"status_code":        "waiting",
+		"cost_usd":           state.Run.CostUSD,
+		"input_tokens":       state.Run.InputTokens,
+		"output_tokens":      state.Run.OutputTokens,
+		"cache_read_tokens":  state.Run.CacheReadTokens,
+		"cache_write_tokens": state.Run.CacheWriteTokens,
 	}
-
-	return cmdClean(repoRoot, sessionName)
+	data, _ := json.Marshal(output)
+	fmt.Println(string(data))
+	return nil
 }
