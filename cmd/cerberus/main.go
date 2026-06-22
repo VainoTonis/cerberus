@@ -2085,8 +2085,8 @@ func cmdTurn() error {
 		}
 	}
 
-	// For new sessions, start the detached container
-	if isNewSession {
+	// Start or restart container if needed: new session OR empty container ID OR container not running
+	if isNewSession || state.Run.ContainerID == "" || !docker.IsContainerRunning(state.Run.ContainerID) {
 		if err := config.RegisterRepo(repoRoot); err != nil {
 			fmt.Fprintf(os.Stderr, "warn: register repo: %v\n", err)
 		}
@@ -2100,29 +2100,6 @@ func cmdTurn() error {
 				Status: "error",
 				UUID:   state.Run.UUID,
 				Error:  fmt.Sprintf("start interactive session: %v", err),
-			}
-			data, _ := json.Marshal(response)
-			fmt.Println(string(data))
-			return nil
-		}
-
-		state.Run.ContainerID = containerID
-		state.Run.Status = config.StatusWaiting
-		config.Save(repoRoot, state)
-	} else if state.Run.ContainerID != "" && !docker.IsContainerRunning(state.Run.ContainerID) {
-		// Container exists but not running; restart it from persisted state
-		if err := config.RegisterRepo(repoRoot); err != nil {
-			fmt.Fprintf(os.Stderr, "warn: register repo: %v\n", err)
-		}
-
-		containerID, err := startInteractiveSession(repoRoot, state, userCfg)
-		if err != nil {
-			state.Run.Status = config.StatusFailed
-			config.Save(repoRoot, state)
-			response := JSONTurnResponse{
-				Status: "error",
-				UUID:   state.Run.UUID,
-				Error:  fmt.Sprintf("restart container: %v", err),
 			}
 			data, _ := json.Marshal(response)
 			fmt.Println(string(data))
@@ -2181,7 +2158,7 @@ func cmdTurn() error {
 		return nil
 	}
 
-	// Store new user message in cache with generated ID
+	// Store new user message and assistant placeholder in cache
 	if state.Run.MessageCache == nil {
 		state.Run.MessageCache = &config.MessageCache{
 			Messages: []config.Message{},
@@ -2198,14 +2175,25 @@ func cmdTurn() error {
 		userParentID = input.ActiveMessageID
 	}
 
-	newMsg := config.Message{
+	// Append user message
+	userMsg := config.Message{
 		ID:       userMessageID,
 		Role:     "user",
 		Content:  userMessage,
 		ParentID: userParentID,
 	}
-	state.Run.MessageCache.Messages = append(state.Run.MessageCache.Messages, newMsg)
-	state.Run.MessageCache.ActiveMessageID = userMessageID
+	state.Run.MessageCache.Messages = append(state.Run.MessageCache.Messages, userMsg)
+
+	// Generate and append assistant placeholder message
+	assistantMsgID := generateUUID()
+	assistantMsg := config.Message{
+		ID:       assistantMsgID,
+		Role:     "assistant",
+		Content:  "",
+		ParentID: userMessageID,
+	}
+	state.Run.MessageCache.Messages = append(state.Run.MessageCache.Messages, assistantMsg)
+	state.Run.MessageCache.ActiveMessageID = assistantMsgID
 
 	state.Run.Status = config.StatusWaiting
 	if err := config.Save(repoRoot, state); err != nil {
@@ -2219,14 +2207,13 @@ func cmdTurn() error {
 		return nil
 	}
 
-	// Generate structured response with assistant_message object
+	// Generate structured response with assistant_message object matching cache
 	// Note: checkpoint_id is null placeholder
-	assistantMsgID := generateUUID()
 	response := JSONTurnResponse{
 		Status:          "ok",
 		UUID:            state.Run.UUID,
 		SessionID:       state.Run.SessionID,
-		ActiveMessageID: userMessageID,
+		ActiveMessageID: assistantMsgID,
 		AssistantMessage: &JSONMessageObject{
 			ID:           assistantMsgID,
 			ParentID:     userMessageID,
