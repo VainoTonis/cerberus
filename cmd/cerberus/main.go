@@ -68,7 +68,7 @@ func main() {
 		cmdCleanCommand(),
 		cmdApplyCommand(),
 		cmdStatsCommand(),
-		cmdSessionsCommand(),
+		cmdPsCommand(),
 		cmdVersionCommand(),
 	)
 
@@ -136,9 +136,13 @@ func cmdStatusCommand() *cobra.Command {
 	var name string
 
 	cmd := &cobra.Command{
-		Use:   "status",
+		Use:   "status [name]",
 		Short: "Show the status of a session",
+		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if name == "" && len(args) == 1 {
+				name = args[0]
+			}
 			return cmdStatus(name)
 		},
 	}
@@ -154,9 +158,13 @@ func cmdLogsCommand() *cobra.Command {
 	var name string
 
 	cmd := &cobra.Command{
-		Use:   "logs",
+		Use:   "logs [name]",
 		Short: "Print session logs",
+		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if name == "" && len(args) == 1 {
+				name = args[0]
+			}
 			return cmdLogs(name)
 		},
 	}
@@ -173,9 +181,13 @@ func cmdReviewCommand() *cobra.Command {
 	var diffFlag bool
 
 	cmd := &cobra.Command{
-		Use:   "review",
+		Use:   "review [name]",
 		Short: "Show what changed in a session",
+		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if name == "" && len(args) == 1 {
+				name = args[0]
+			}
 			return cmdReview(name, diffFlag)
 		},
 	}
@@ -193,17 +205,17 @@ func cmdCleanCommand() *cobra.Command {
 	var all bool
 
 	cmd := &cobra.Command{
-		Use:   "clean",
+		Use:   "clean [name]",
 		Short: "Remove a session's worktree, branch, and state",
+		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			repoRoot, err := resolveRepoRoot()
-			if err != nil {
-				return err
+			if name == "" && len(args) == 1 {
+				name = args[0]
 			}
 			if all {
-				return cmdCleanAll(repoRoot)
+				return cmdCleanAll()
 			}
-			return cmdClean(repoRoot, name)
+			return cmdClean(name)
 		},
 	}
 
@@ -218,14 +230,14 @@ func cmdApplyCommand() *cobra.Command {
 	var name string
 
 	cmd := &cobra.Command{
-		Use:   "apply",
+		Use:   "apply [name]",
 		Short: "Merge a done session's branch into the current branch and clean up",
+		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			repoRoot, err := resolveRepoRoot()
-			if err != nil {
-				return err
+			if name == "" && len(args) == 1 {
+				name = args[0]
 			}
-			return cmdApply(repoRoot, name)
+			return cmdApply(name)
 		},
 	}
 
@@ -235,10 +247,13 @@ func cmdApplyCommand() *cobra.Command {
 	return cmd
 }
 
-func cmdApply(repoRoot, name string) error {
-	sessionName, err := resolveSession(repoRoot, name)
+func cmdApply(name string) error {
+	repoRoot, sessionName, err := resolveSessionLocation(name)
 	if err != nil {
 		return err
+	}
+	if config.IsNoRepoRoot(repoRoot) {
+		return fmt.Errorf("apply not supported for no-repo chat session %q", sessionName)
 	}
 
 	state, err := config.Load(repoRoot, sessionName)
@@ -267,7 +282,7 @@ func cmdApply(repoRoot, name string) error {
 
 	fmt.Printf("merged %s into %s\n", sessionBranch, currentBranch)
 
-	return cmdClean(repoRoot, sessionName)
+	return cmdCleanAt(repoRoot, sessionName)
 }
 
 func cmdStatsCommand() *cobra.Command {
@@ -324,8 +339,8 @@ type psEntry struct {
 	loadErr     error
 }
 
-// cmdSessions lists all sessions, optionally as JSON.
-func cmdSessions(jsonFlag bool) error {
+// cmdPs lists all sessions, optionally as JSON.
+func cmdPs(jsonFlag bool) error {
 	// Collect repos to scan: registry + current repo (if resolvable).
 	seen := map[string]bool{}
 	var repos []string
@@ -432,13 +447,19 @@ func cmdSessions(jsonFlag bool) error {
 }
 
 func completionSessions(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
-	repoRoot, err := resolveRepoRoot()
-	if err != nil {
-		return nil, cobra.ShellCompDirectiveNoFileComp
-	}
-	sessions, err := config.ListSessions(repoRoot)
-	if err != nil {
-		return nil, cobra.ShellCompDirectiveNoFileComp
+	seen := map[string]bool{}
+	var sessions []string
+	for _, root := range sessionRoots() {
+		names, err := config.ListSessions(root)
+		if err != nil {
+			continue
+		}
+		for _, name := range names {
+			if !seen[name] {
+				seen[name] = true
+				sessions = append(sessions, name)
+			}
+		}
 	}
 	return sessions, cobra.ShellCompDirectiveNoFileComp
 }
@@ -450,6 +471,20 @@ func resolveRepoRoot() (string, error) {
 		return "", fmt.Errorf("get working directory: %w", err)
 	}
 	return git.RepoRoot(cwd)
+}
+
+func resolveTurnRepoRoot(inputRepo string, noRepo bool) (string, bool, error) {
+	if noRepo {
+		return config.NoRepoChatRoot, true, nil
+	}
+	if inputRepo != "" {
+		return inputRepo, false, nil
+	}
+	repoRoot, err := resolveRepoRoot()
+	if err != nil {
+		return "", false, err
+	}
+	return repoRoot, false, nil
 }
 
 // resolveSession resolves the session name to use.
@@ -472,6 +507,63 @@ func resolveSession(repoRoot, name string) (string, error) {
 	default:
 		return "", fmt.Errorf("multiple sessions active (%s); specify one with --name", strings.Join(sessions, ", "))
 	}
+}
+
+func sessionRoots() []string {
+	seen := map[string]bool{}
+	var roots []string
+
+	registered, _ := config.LoadRepoRegistry()
+	for _, r := range registered {
+		if !seen[r] {
+			seen[r] = true
+			roots = append(roots, r)
+		}
+	}
+
+	if cur, err := resolveRepoRoot(); err == nil && !seen[cur] {
+		roots = append(roots, cur)
+	}
+
+	return roots
+}
+
+func resolveSessionLocation(name string) (string, string, error) {
+	roots := sessionRoots()
+	type match struct {
+		repoRoot string
+		name     string
+	}
+	var matches []match
+
+	for _, root := range roots {
+		sessions, err := config.ListSessions(root)
+		if err != nil {
+			continue
+		}
+		for _, sessionName := range sessions {
+			if name == "" || sessionName == name {
+				matches = append(matches, match{repoRoot: root, name: sessionName})
+			}
+		}
+	}
+
+	if len(matches) == 0 {
+		if name != "" {
+			return "", "", fmt.Errorf("no cerberus session %q found", name)
+		}
+		return "", "", fmt.Errorf("no cerberus sessions found; run 'cerberus start' first")
+	}
+
+	if len(matches) == 1 {
+		return matches[0].repoRoot, matches[0].name, nil
+	}
+
+	labels := make([]string, 0, len(matches))
+	for _, m := range matches {
+		labels = append(labels, fmt.Sprintf("%s (%s)", m.name, m.repoRoot))
+	}
+	return "", "", fmt.Errorf("multiple sessions active (%s); specify one with --name", strings.Join(labels, ", "))
 }
 
 // generateSessionName creates an adjective-noun style name.
@@ -1224,12 +1316,7 @@ func runAgentInDockerRerun(repoRoot string, state *config.State, prompt string, 
 
 // cmdStatus prints the status of a session.
 func cmdStatus(name string) error {
-	repoRoot, err := resolveRepoRoot()
-	if err != nil {
-		return err
-	}
-
-	sessionName, err := resolveSession(repoRoot, name)
+	repoRoot, sessionName, err := resolveSessionLocation(name)
 	if err != nil {
 		return err
 	}
@@ -1240,7 +1327,11 @@ func cmdStatus(name string) error {
 	}
 
 	fmt.Printf("session: %s\n", state.Name)
-	fmt.Printf("branch:  %s (%s)\n", state.BaseBranch, state.BaseCommit[:8])
+	if state.BaseCommit != "" {
+		fmt.Printf("branch:  %s (%s)\n", state.BaseBranch, state.BaseCommit[:8])
+	} else {
+		fmt.Printf("branch:  %s\n", state.BaseBranch)
+	}
 	fmt.Printf("prompt:  %s\n\n", truncate(state.Prompt, 72))
 
 	r := &state.Run
@@ -1265,12 +1356,7 @@ func cmdStatus(name string) error {
 
 // cmdLogs prints the log file for a session.
 func cmdLogs(name string) error {
-	repoRoot, err := resolveRepoRoot()
-	if err != nil {
-		return err
-	}
-
-	sessionName, err := resolveSession(repoRoot, name)
+	repoRoot, sessionName, err := resolveSessionLocation(name)
 	if err != nil {
 		return err
 	}
@@ -1305,12 +1391,7 @@ func cmdLogs(name string) error {
 
 // cmdReview prints the changed files for a session.
 func cmdReview(name string, diffFlag bool) error {
-	repoRoot, err := resolveRepoRoot()
-	if err != nil {
-		return err
-	}
-
-	sessionName, err := resolveSession(repoRoot, name)
+	repoRoot, sessionName, err := resolveSessionLocation(name)
 	if err != nil {
 		return err
 	}
@@ -1321,6 +1402,11 @@ func cmdReview(name string, diffFlag bool) error {
 	}
 
 	r := &state.Run
+	if state.BaseCommit == "" {
+		fmt.Printf("status  %s  %s\n", r.Status, r.Branch)
+		fmt.Printf("(chat session has no git diff)\n\n")
+		return nil
+	}
 	if r.CommitHash != "" {
 		fmt.Printf("commit  %s  %s\n", r.CommitHash[:8], r.Branch)
 	} else {
@@ -1367,33 +1453,40 @@ func cmdReview(name string, diffFlag bool) error {
 }
 
 // cmdClean removes a session's worktree, branch, and state.
-func cmdCleanAll(repoRoot string) error {
-	sessions, err := config.ListSessions(repoRoot)
-	if err != nil {
-		return err
-	}
-
-	if len(sessions) == 0 {
-		fmt.Println("no sessions to clean")
-		return nil
-	}
-
+func cmdCleanAll() error {
+	roots := sessionRoots()
+	found := false
 	var errs []error
-	for _, s := range sessions {
-		if err := cmdClean(repoRoot, s); err != nil {
-			errs = append(errs, fmt.Errorf("session %q: %w", s, err))
+	for _, repoRoot := range roots {
+		sessions, err := config.ListSessions(repoRoot)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", repoRoot, err))
+			continue
 		}
+		for _, s := range sessions {
+			found = true
+			if err := cmdCleanAt(repoRoot, s); err != nil {
+				errs = append(errs, fmt.Errorf("session %q: %w", s, err))
+			}
+		}
+	}
+
+	if !found {
+		fmt.Println("no sessions to clean")
 	}
 
 	return errors.Join(errs...)
 }
 
-func cmdClean(repoRoot, name string) error {
-	sessionName, err := resolveSession(repoRoot, name)
+func cmdClean(name string) error {
+	repoRoot, sessionName, err := resolveSessionLocation(name)
 	if err != nil {
 		return err
 	}
+	return cmdCleanAt(repoRoot, sessionName)
+}
 
+func cmdCleanAt(repoRoot, sessionName string) error {
 	state, err := config.Load(repoRoot, sessionName)
 	if err != nil {
 		return err
@@ -1415,8 +1508,10 @@ func cmdClean(repoRoot, name string) error {
 
 	// Get path to the worktree for git worktree remove
 	// We'll build it directly: .cerberus/sessions/<name>/worktrees/solve
-	if err := removeWorktreeViaGit(repoRoot, wtPath, branchName); err != nil {
-		fmt.Fprintf(os.Stderr, "warning: remove worktree: %v\n", err)
+	if branchName != "" {
+		if err := removeWorktreeViaGit(repoRoot, wtPath, branchName); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: remove worktree: %v\n", err)
+		}
 	}
 
 	// Remove session directory
@@ -1784,24 +1879,25 @@ type JSONMessageInput struct {
 
 // JSONTurnRequest represents the input JSON for a turn command.
 type JSONTurnRequest struct {
-	UUID            string           `json:"uuid"`                         // Session UUID (for existing sessions) or empty for new
-	Repo            string           `json:"repo"`                         // Repository root path
-	Agent           string           `json:"agent,omitempty"`              // Agent name (for new sessions)
-	Model           string           `json:"model,omitempty"`              // Model (for new sessions)
-	Image           string           `json:"image,omitempty"`              // Docker image (for new sessions)
-	Message         string           `json:"message"`                      // User message for this turn (legacy string format)
-	MessageObject   JSONMessageInput `json:"message_object,omitempty"`     // Structured message input (new format)
-	ActiveMessageID string           `json:"active_message_id,omitempty"`  // Active message ID in history
-	History         []config.Message `json:"history,omitempty"`            // Optional conversation history with parent links
-	CallbackURL     string           `json:"callback_url,omitempty"`       // Optional callback URL for events
+	UUID            string           `json:"uuid"`                        // Session UUID (for existing sessions) or empty for new
+	Repo            string           `json:"repo"`                        // Repository root path
+	NoRepo          bool             `json:"no_repo,omitempty"`           // Run chat without a repository/workspace mount
+	Agent           string           `json:"agent,omitempty"`             // Agent name (for new sessions)
+	Model           string           `json:"model,omitempty"`             // Model (for new sessions)
+	Image           string           `json:"image,omitempty"`             // Docker image (for new sessions)
+	Message         string           `json:"message"`                     // User message for this turn (legacy string format)
+	MessageObject   JSONMessageInput `json:"message_object,omitempty"`    // Structured message input (new format)
+	ActiveMessageID string           `json:"active_message_id,omitempty"` // Active message ID in history
+	History         []config.Message `json:"history,omitempty"`           // Optional conversation history with parent links
+	CallbackURL     string           `json:"callback_url,omitempty"`      // Optional callback URL for events
 }
 
 // JSONMessageObject represents a structured message object in the response.
 type JSONMessageObject struct {
-	ID           string `json:"id"`
-	ParentID     string `json:"parent_id,omitempty"`
-	Role         string `json:"role"`
-	Content      string `json:"content"`
+	ID           string  `json:"id"`
+	ParentID     string  `json:"parent_id,omitempty"`
+	Role         string  `json:"role"`
+	Content      string  `json:"content"`
 	CheckpointID *string `json:"checkpoint_id"` // null placeholder
 }
 
@@ -1822,11 +1918,11 @@ type JSONTurnResponse struct {
 
 // cmdTurn processes a single JSON chat turn from stdin and outputs JSON to stdout.
 // JSON v1 turn protocol:
-//  - Input: session UUID (or empty for new), repo, optional agent/model/image, user message, optional history
-//  - Creates new interactive session if UUID empty and session doesn't exist
-//  - Continues existing session by stable UUID
-//  - Returns structured JSON with session info, tokens, and structured assistant_message
-//  - Avoids writing agent text events to stdout
+//   - Input: session UUID (or empty for new), repo, optional agent/model/image, user message, optional history
+//   - Creates new interactive session if UUID empty and session doesn't exist
+//   - Continues existing session by stable UUID
+//   - Returns structured JSON with session info, tokens, and structured assistant_message
+//   - Avoids writing agent text events to stdout
 func cmdTurn() error {
 	var input JSONTurnRequest
 	decoder := json.NewDecoder(os.Stdin)
@@ -1861,19 +1957,15 @@ func cmdTurn() error {
 		}
 	}
 
-	repoRoot := input.Repo
-	if repoRoot == "" {
-		var err error
-		repoRoot, err = resolveRepoRoot()
-		if err != nil {
-			response := JSONTurnResponse{
-				Status: "error",
-				Error:  fmt.Sprintf("repo required: %v", err),
-			}
-			data, _ := json.Marshal(response)
-			fmt.Println(string(data))
-			return nil
+	repoRoot, noRepo, err := resolveTurnRepoRoot(input.Repo, input.NoRepo)
+	if err != nil {
+		response := JSONTurnResponse{
+			Status: "error",
+			Error:  fmt.Sprintf("resolve repo: %v", err),
 		}
+		data, _ := json.Marshal(response)
+		fmt.Println(string(data))
+		return nil
 	}
 
 	userCfg, err := config.LoadUserConfig()
@@ -1944,48 +2036,52 @@ func cmdTurn() error {
 
 		// Generate session name and initialize state
 		sessionName = generateSessionName()
-		baseBranch, err := git.CurrentBranch(repoRoot)
-		if err != nil {
-			response := JSONTurnResponse{
-				Status: "error",
-				Error:  fmt.Sprintf("get current branch: %v", err),
+		baseBranch := "chat"
+		baseCommit := ""
+		branchName := ""
+		wtPath := ""
+		if !noRepo {
+			repoStateDir, err := config.RepoStateDir(repoRoot)
+			if err != nil {
+				response := JSONTurnResponse{
+					Status: "error",
+					Error:  fmt.Sprintf("get repo state dir: %v", err),
+				}
+				data, _ := json.Marshal(response)
+				fmt.Println(string(data))
+				return nil
 			}
-			data, _ := json.Marshal(response)
-			fmt.Println(string(data))
-			return nil
-		}
-		baseCommit, err := git.CurrentCommit(repoRoot)
-		if err != nil {
-			response := JSONTurnResponse{
-				Status: "error",
-				Error:  fmt.Sprintf("get current commit: %v", err),
+			wtPath = filepath.Join(repoStateDir, "sessions", sessionName, "worktrees", "solve")
+			baseBranch, err = git.CurrentBranch(repoRoot)
+			if err != nil {
+				response := JSONTurnResponse{
+					Status: "error",
+					Error:  fmt.Sprintf("get current branch: %v", err),
+				}
+				data, _ := json.Marshal(response)
+				fmt.Println(string(data))
+				return nil
 			}
-			data, _ := json.Marshal(response)
-			fmt.Println(string(data))
-			return nil
-		}
-
-		// Create worktree
-		repoStateDir, err := config.RepoStateDir(repoRoot)
-		if err != nil {
-			response := JSONTurnResponse{
-				Status: "error",
-				Error:  fmt.Sprintf("get repo state dir: %v", err),
+			baseCommit, err = git.CurrentCommit(repoRoot)
+			if err != nil {
+				response := JSONTurnResponse{
+					Status: "error",
+					Error:  fmt.Sprintf("get current commit: %v", err),
+				}
+				data, _ := json.Marshal(response)
+				fmt.Println(string(data))
+				return nil
 			}
-			data, _ := json.Marshal(response)
-			fmt.Println(string(data))
-			return nil
-		}
-		wtPath := filepath.Join(repoStateDir, "sessions", sessionName, "worktrees", "solve")
-		branchName := "cerberus/" + sessionName
-		if _, err := createWorktreePath(repoRoot, wtPath, branchName, baseCommit); err != nil {
-			response := JSONTurnResponse{
-				Status: "error",
-				Error:  fmt.Sprintf("create worktree: %v", err),
+			branchName = "cerberus/" + sessionName
+			if _, err := createWorktreePath(repoRoot, wtPath, branchName, baseCommit); err != nil {
+				response := JSONTurnResponse{
+					Status: "error",
+					Error:  fmt.Sprintf("create worktree: %v", err),
+				}
+				data, _ := json.Marshal(response)
+				fmt.Println(string(data))
+				return nil
 			}
-			data, _ := json.Marshal(response)
-			fmt.Println(string(data))
-			return nil
 		}
 
 		// Initialize log path
@@ -2260,9 +2356,13 @@ func startInteractiveSession(repoRoot string, state *config.State, userCfg confi
 	}
 
 	mounts := []docker.Mount{
-		{Host: state.Run.Worktree, Container: "/workspace"},
 		{Host: filepath.Join(homeDir, ".pi", "agent"), Container: "/home/agent/.pi/agent"},
 		{Host: piSessionDir, Container: "/tmp/pi-sessions"},
+	}
+	workdir := ""
+	if state.Run.Worktree != "" {
+		mounts = append(mounts, docker.Mount{Host: state.Run.Worktree, Container: "/workspace"})
+		workdir = "/workspace"
 	}
 
 	gradleInitD := filepath.Join(homeDir, ".gradle", "init.d")
@@ -2300,7 +2400,7 @@ func startInteractiveSession(repoRoot string, state *config.State, userCfg confi
 
 	startArgs := docker.StartArgs{
 		Image:    state.Run.Image,
-		Workdir:  "/workspace",
+		Workdir:  workdir,
 		Mounts:   mounts,
 		Env:      envVars,
 		EnvFile:  envFile,
@@ -2343,15 +2443,15 @@ func cmdTurnCommand() *cobra.Command {
 	return cmd
 }
 
-// cmdSessionsCommand creates a cobra command for the "sessions" subcommand.
-func cmdSessionsCommand() *cobra.Command {
+// cmdPsCommand creates a cobra command for the "ps" subcommand.
+func cmdPsCommand() *cobra.Command {
 	var jsonFlag bool
 
 	cmd := &cobra.Command{
-		Use:   "sessions",
+		Use:   "ps",
 		Short: "List all sessions",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return cmdSessions(jsonFlag)
+			return cmdPs(jsonFlag)
 		},
 	}
 

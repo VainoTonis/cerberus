@@ -201,7 +201,7 @@ cerberus close [flags]
 Show what changed in a session.
 
 ```
-cerberus review [flags]
+cerberus review [name] [flags]
   --name string  session name (required if multiple active)
   --diff         print full unified diffs
 ```
@@ -211,7 +211,7 @@ cerberus review [flags]
 Print session state: branch, status, tokens used, cost.
 
 ```
-cerberus status [flags]
+cerberus status [name] [flags]
   --name string  session name (required if multiple active)
 ```
 
@@ -220,7 +220,7 @@ cerberus status [flags]
 Print the agent's full output log.
 
 ```
-cerberus logs [flags]
+cerberus logs [name] [flags]
   --name string  session name (required if multiple active)
 ```
 
@@ -229,9 +229,18 @@ cerberus logs [flags]
 Remove session worktree, branch, and state. Stops any running container.
 
 ```
-cerberus clean [flags]
+cerberus clean [name] [flags]
   --name string  session name (required if multiple active)
   --all          clean all sessions
+```
+
+### `ps`
+
+List known sessions across registered repos and no-repo chats.
+
+```
+cerberus ps [flags]
+  --json  output as JSON array
 ```
 
 ### `stats`

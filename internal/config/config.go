@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -16,6 +17,8 @@ const (
 	StateFile  = "state.json"
 	ConfigFile = "config.json"
 )
+
+const NoRepoChatRoot = "chat://default"
 
 const (
 	DefaultMaxTurns        = 30
@@ -130,10 +133,21 @@ func RepoStateDir(repoRoot string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	if IsNoRepoRoot(repoRoot) {
+		name := strings.TrimPrefix(repoRoot, "chat://")
+		if name == "" {
+			name = "default"
+		}
+		return filepath.Join(home, "chats", name), nil
+	}
 	basename := filepath.Base(repoRoot)
 	hash := sha256.Sum256([]byte(repoRoot))
 	hash6 := hex.EncodeToString(hash[:])[0:6]
 	return filepath.Join(home, "repos", basename+"-"+hash6), nil
+}
+
+func IsNoRepoRoot(root string) bool {
+	return strings.HasPrefix(root, "chat://")
 }
 
 // LoadUserConfig reads ~/.cerberus/config.json.
@@ -185,34 +199,34 @@ type MessageCache struct {
 }
 
 type Run struct {
-	Branch           string         `json:"branch"`
-	Worktree         string         `json:"worktree"`
-	Agent            string         `json:"agent"`
-	Model            string         `json:"model"`
-	Image            string         `json:"image"`
-	ProfileFile      string         `json:"profile_file,omitempty"`
-	ContainerID      string         `json:"container_id,omitempty"`
-	Status           RunStatus      `json:"status"`
-	Interactive      bool           `json:"interactive,omitempty"`
-	PID              int            `json:"pid,omitempty"`
-	LogFile          string         `json:"log_file,omitempty"`
-	ExitCode         int            `json:"exit_code,omitempty"`
-	FailReason       string         `json:"fail_reason,omitempty"`
-	SessionID        string         `json:"session_id,omitempty"`
-	CommitHash       string         `json:"commit_hash,omitempty"`
-	StartedAt        time.Time      `json:"started_at,omitempty"`
-	FinishedAt       time.Time      `json:"finished_at,omitempty"`
-	InputTokens      int            `json:"input_tokens,omitempty"`
-	OutputTokens     int            `json:"output_tokens,omitempty"`
-	CacheReadTokens  int            `json:"cache_read_tokens,omitempty"`
-	CacheWriteTokens int            `json:"cache_write_tokens,omitempty"`
-	CostUSD          float64        `json:"cost_usd,omitempty"`
-	WorkDir          string         `json:"work_dir,omitempty"`
-	InvokedBy        string         `json:"invoked_by,omitempty"`
-	Orchestrator     string         `json:"orchestrator,omitempty"`
-	UUID             string         `json:"uuid,omitempty"`
-	MessageCache     *MessageCache  `json:"message_cache,omitempty"`
-	CheckpointSlot   string         `json:"checkpoint_slot,omitempty"`
+	Branch           string        `json:"branch"`
+	Worktree         string        `json:"worktree"`
+	Agent            string        `json:"agent"`
+	Model            string        `json:"model"`
+	Image            string        `json:"image"`
+	ProfileFile      string        `json:"profile_file,omitempty"`
+	ContainerID      string        `json:"container_id,omitempty"`
+	Status           RunStatus     `json:"status"`
+	Interactive      bool          `json:"interactive,omitempty"`
+	PID              int           `json:"pid,omitempty"`
+	LogFile          string        `json:"log_file,omitempty"`
+	ExitCode         int           `json:"exit_code,omitempty"`
+	FailReason       string        `json:"fail_reason,omitempty"`
+	SessionID        string        `json:"session_id,omitempty"`
+	CommitHash       string        `json:"commit_hash,omitempty"`
+	StartedAt        time.Time     `json:"started_at,omitempty"`
+	FinishedAt       time.Time     `json:"finished_at,omitempty"`
+	InputTokens      int           `json:"input_tokens,omitempty"`
+	OutputTokens     int           `json:"output_tokens,omitempty"`
+	CacheReadTokens  int           `json:"cache_read_tokens,omitempty"`
+	CacheWriteTokens int           `json:"cache_write_tokens,omitempty"`
+	CostUSD          float64       `json:"cost_usd,omitempty"`
+	WorkDir          string        `json:"work_dir,omitempty"`
+	InvokedBy        string        `json:"invoked_by,omitempty"`
+	Orchestrator     string        `json:"orchestrator,omitempty"`
+	UUID             string        `json:"uuid,omitempty"`
+	MessageCache     *MessageCache `json:"message_cache,omitempty"`
+	CheckpointSlot   string        `json:"checkpoint_slot,omitempty"`
 }
 
 type State struct {
