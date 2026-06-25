@@ -1879,6 +1879,7 @@ type JSONMessageInput struct {
 
 // JSONTurnRequest represents the input JSON for a turn command.
 type JSONTurnRequest struct {
+	Name            string           `json:"name,omitempty"`              // Optional stable session name for new sessions
 	UUID            string           `json:"uuid"`                        // Session UUID (for existing sessions) or empty for new
 	Repo            string           `json:"repo"`                        // Repository root path
 	NoRepo          bool             `json:"no_repo,omitempty"`           // Run chat without a repository/workspace mount
@@ -2034,8 +2035,20 @@ func cmdTurn() error {
 			return nil
 		}
 
-		// Generate session name and initialize state
-		sessionName = generateSessionName()
+		// Use caller-provided session name when present; otherwise generate one.
+		sessionName = input.Name
+		if sessionName == "" {
+			sessionName = generateSessionName()
+		}
+		if _, err := config.Load(repoRoot, sessionName); err == nil {
+			response := JSONTurnResponse{
+				Status: "error",
+				Error:  fmt.Sprintf("session %q already exists", sessionName),
+			}
+			data, _ := json.Marshal(response)
+			fmt.Println(string(data))
+			return nil
+		}
 		baseBranch := "chat"
 		baseCommit := ""
 		branchName := ""
