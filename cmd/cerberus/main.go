@@ -156,6 +156,7 @@ func cmdStatusCommand() *cobra.Command {
 
 func cmdLogsCommand() *cobra.Command {
 	var name string
+	var summary bool
 
 	cmd := &cobra.Command{
 		Use:   "logs [name]",
@@ -165,11 +166,15 @@ func cmdLogsCommand() *cobra.Command {
 			if name == "" && len(args) == 1 {
 				name = args[0]
 			}
+			if summary {
+				return cmdLogsSummary(name)
+			}
 			return cmdLogs(name)
 		},
 	}
 
 	cmd.Flags().StringVar(&name, "name", "", "session name (required if multiple sessions exist)")
+	cmd.Flags().BoolVar(&summary, "summary", false, "print a compact summary (tools used + final response)")
 
 	cmd.RegisterFlagCompletionFunc("name", completionSessions)
 
@@ -896,6 +901,9 @@ func runAgentInDocker(repoRoot string, state *config.State, prompt string, agent
 		Stderr:   pipeW,
 	}
 
+	state.Run.Status = config.StatusRunning
+	config.Save(repoRoot, state)
+
 	containerID, exitCode, err := docker.Run(ctx, runArgs)
 	pipeW.Close()
 
@@ -919,9 +927,6 @@ func runAgentInDocker(repoRoot string, state *config.State, prompt string, agent
 	if err != nil {
 		return exitCode, fmt.Errorf("docker run: %w", err)
 	}
-
-	state.Run.Status = config.StatusRunning
-	config.Save(repoRoot, state)
 
 	return exitCode, nil
 }
@@ -1287,6 +1292,9 @@ func runAgentInDockerRerun(repoRoot string, state *config.State, prompt string, 
 		Stderr:   pipeW,
 	}
 
+	state.Run.Status = config.StatusRunning
+	config.Save(repoRoot, state)
+
 	containerID, exitCode, err := docker.Run(rerunCtx, runArgs)
 	pipeW.Close()
 
@@ -1307,9 +1315,6 @@ func runAgentInDockerRerun(repoRoot string, state *config.State, prompt string, 
 	if err != nil {
 		return exitCode, fmt.Errorf("docker run: %w", err)
 	}
-
-	state.Run.Status = config.StatusRunning
-	config.Save(repoRoot, state)
 
 	return exitCode, nil
 }
@@ -1387,6 +1392,124 @@ func cmdLogs(name string) error {
 	}
 
 	return nil
+}
+
+// cmdLogsSummary prints a compact human-readable summary of a session log:
+// one line per tool call and the final assistant text response.
+func cmdLogsSummary(name string) error {
+	repoRoot, sessionName, err := resolveSessionLocation(name)
+	if err != nil {
+		return err
+	}
+
+	state, err := config.Load(repoRoot, sessionName)
+	if err != nil {
+		return err
+	}
+
+	logPath := state.Run.LogFile
+	f, err := os.Open(logPath)
+	if err != nil {
+		return fmt.Errorf("open log: %w", err)
+	}
+	defer f.Close()
+
+	type toolExecStart struct {
+		ToolName string          `json:"toolName"`
+		Args     json.RawMessage `json:"args"`
+	}
+	type contentItem struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	type turnEndMsg struct {
+		Content []contentItem `json:"content"`
+	}
+	type turnEndEvent struct {
+		Message turnEndMsg `json:"message"`
+	}
+	type rawEvent struct {
+		Type string `json:"type"`
+	}
+
+	var lastText string
+	toolCount := 0
+
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 4*1024*1024), 4*1024*1024)
+	for scanner.Scan() {
+		raw := scanner.Bytes()
+
+		var ev rawEvent
+		if err := json.Unmarshal(raw, &ev); err != nil {
+			continue
+		}
+
+		switch ev.Type {
+		case "tool_execution_start":
+			var te toolExecStart
+			if err := json.Unmarshal(raw, &te); err != nil {
+				continue
+			}
+			// Condense args to a single key=value if there's one dominant field.
+			argSummary := condensedArgs(te.Args)
+			toolCount++
+			if argSummary != "" {
+				fmt.Printf("[tool] %s(%s)\n", te.ToolName, argSummary)
+			} else {
+				fmt.Printf("[tool] %s\n", te.ToolName)
+			}
+		case "turn_end":
+			var te turnEndEvent
+			if err := json.Unmarshal(raw, &te); err != nil {
+				continue
+			}
+			for _, c := range te.Message.Content {
+				if c.Type == "text" && c.Text != "" {
+					lastText = c.Text
+				}
+			}
+		}
+	}
+
+	if lastText != "" {
+		fmt.Printf("\n[response] %s\n", lastText)
+	}
+	fmt.Printf("\n%d tool calls total\n", toolCount)
+
+	return nil
+}
+
+// condensedArgs returns a short string summarising the most relevant argument
+// from a tool's JSON args object (first string value found, truncated).
+func condensedArgs(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var m map[string]interface{}
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return ""
+	}
+	// Prefer known high-signal keys first.
+	for _, key := range []string{"path", "command", "url", "filePath", "pattern"} {
+		if v, ok := m[key]; ok {
+			s := fmt.Sprintf("%v", v)
+			if len(s) > 80 {
+				s = s[:77] + "..."
+			}
+			return s
+		}
+	}
+	// Fall back to first string value.
+	for _, v := range m {
+		if s, ok := v.(string); ok {
+			if len(s) > 80 {
+				s = s[:77] + "..."
+			}
+			return s
+		}
+	}
+	return ""
 }
 
 // cmdReview prints the changed files for a session.
