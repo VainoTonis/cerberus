@@ -1395,7 +1395,7 @@ func cmdLogs(name string) error {
 }
 
 // cmdLogsSummary prints a compact human-readable summary of a session log:
-// one line per tool call and the final assistant text response.
+// one line per tool call and a truncated text snippet per turn.
 func cmdLogsSummary(name string) error {
 	repoRoot, sessionName, err := resolveSessionLocation(name)
 	if err != nil {
@@ -1432,8 +1432,8 @@ func cmdLogsSummary(name string) error {
 		Type string `json:"type"`
 	}
 
-	var lastText string
 	toolCount := 0
+	turnNum := 0
 
 	scanner := bufio.NewScanner(f)
 	scanner.Buffer(make([]byte, 4*1024*1024), 4*1024*1024)
@@ -1451,13 +1451,12 @@ func cmdLogsSummary(name string) error {
 			if err := json.Unmarshal(raw, &te); err != nil {
 				continue
 			}
-			// Condense args to a single key=value if there's one dominant field.
 			argSummary := condensedArgs(te.Args)
 			toolCount++
 			if argSummary != "" {
-				fmt.Printf("[tool] %s(%s)\n", te.ToolName, argSummary)
+				fmt.Printf("  [tool] %s(%s)\n", te.ToolName, argSummary)
 			} else {
-				fmt.Printf("[tool] %s\n", te.ToolName)
+				fmt.Printf("  [tool] %s\n", te.ToolName)
 			}
 		case "turn_end":
 			var te turnEndEvent
@@ -1466,15 +1465,17 @@ func cmdLogsSummary(name string) error {
 			}
 			for _, c := range te.Message.Content {
 				if c.Type == "text" && c.Text != "" {
-					lastText = c.Text
+					turnNum++
+					text := strings.ReplaceAll(c.Text, "\n", " ")
+					if len(text) > 120 {
+						text = text[:117] + "..."
+					}
+					fmt.Printf("[turn %d] %s\n", turnNum, text)
 				}
 			}
 		}
 	}
 
-	if lastText != "" {
-		fmt.Printf("\n[response] %s\n", lastText)
-	}
 	fmt.Printf("\n%d tool calls total\n", toolCount)
 
 	return nil
