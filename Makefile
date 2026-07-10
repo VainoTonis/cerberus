@@ -5,7 +5,7 @@ INSTALL    := $(HOME)/.local/bin/$(BINARY)
 CONFIG_DIR := $(HOME)/.config/cerberus
 CONFIG     := $(CONFIG_DIR)/config.json
 
-.PHONY: build install init-config clean
+.PHONY: build install init-config clean image
 
 build:
 	go build $(LDFLAGS) -o $(BINARY) ./cmd/cerberus
@@ -25,3 +25,6 @@ install: build init-config
 
 clean:
 	rm -f $(BINARY)
+
+image:
+	docker build -t cerberus-agent docker/
