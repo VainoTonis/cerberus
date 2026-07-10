@@ -5,5 +5,19 @@
   "aws_profile": "",
   "aws_region": "",
   "max_turns": 30,
-  "max_output_tokens": 10000
+  "max_output_tokens": 10000,
+  "pi_agent": {
+    "auth_path": "",
+    "models_path": "",
+    "settings_path": "",
+    "agents": {
+      "source": "",
+      "template": "",
+      "default": ""
+    },
+    "extensions_path": "~/.pi/agent/extensions",
+    "skills_path": "~/.pi/agent/skills",
+    "prompts_path": "~/.pi/agent/prompts",
+    "themes_path": "~/.pi/agent/themes"
+  }
 }

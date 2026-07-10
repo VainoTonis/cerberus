@@ -723,6 +723,7 @@ func cmdStart(sessionName, prompt, promptFile, agentFlag, modelFlag, imageFlag, 
 	if err := config.Save(repoRoot, state); err != nil {
 		return fmt.Errorf("save state: %w", err)
 	}
+
 	if err := config.RegisterRepo(repoRoot); err != nil {
 		fmt.Fprintf(os.Stderr, "warn: register repo: %v\n", err)
 	}
@@ -826,9 +827,25 @@ func runAgentInDocker(repoRoot string, state *config.State, prompt string, agent
 		return 1, fmt.Errorf("get home dir: %w", err)
 	}
 
+	// Generate and mount PI agent config directory for this session using profile-applied config
+	piAgentDir, err := config.GeneratePIAgentDirWithConfig(repoRoot, sessionName, &userCfg)
+	if err != nil {
+		return 1, fmt.Errorf("generate pi agent dir: %w", err)
+	}
+
+	// Get PI session directory for conversation history
+	piSessionDir, err := config.PiSessionDir(repoRoot, sessionName)
+	if err != nil {
+		return 1, fmt.Errorf("get pi session dir: %w", err)
+	}
+	if err := os.MkdirAll(piSessionDir, 0o755); err != nil {
+		return 1, fmt.Errorf("create pi session dir: %w", err)
+	}
+
 	mounts := []docker.Mount{
 		{Host: wtPath, Container: "/workspace"},
-		{Host: filepath.Join(homeDir, ".pi", "agent"), Container: "/home/agent/.pi/agent"},
+		{Host: piAgentDir, Container: "/home/agent/.pi/agent"},
+		{Host: piSessionDir, Container: "/tmp/pi-sessions"},
 	}
 
 	gradleInitD := filepath.Join(homeDir, ".gradle", "init.d")
@@ -884,6 +901,7 @@ func runAgentInDocker(repoRoot string, state *config.State, prompt string, agent
 			envVars = append(envVars, key+"="+cfgVal)
 		}
 	}
+	envVars = append(envVars, "PI_CODING_AGENT_DIR=/home/agent/.pi/agent")
 	envVars = append(envVars, "PI_CODING_AGENT_SESSION_DIR=/tmp/pi-sessions")
 	for k, v := range userCfg.ExtraEnv {
 		envVars = append(envVars, k+"="+v)
@@ -1217,9 +1235,25 @@ func runAgentInDockerRerun(repoRoot string, state *config.State, prompt string, 
 		return 1, fmt.Errorf("get home dir: %w", err)
 	}
 
+	// Generate and mount PI agent config directory for this session using profile-applied config
+	piAgentDir, err := config.GeneratePIAgentDirWithConfig(repoRoot, sessionName, &rerunUserCfg)
+	if err != nil {
+		return 1, fmt.Errorf("generate pi agent dir: %w", err)
+	}
+
+	// Get PI session directory for conversation history
+	piSessionDir, err := config.PiSessionDir(repoRoot, sessionName)
+	if err != nil {
+		return 1, fmt.Errorf("get pi session dir: %w", err)
+	}
+	if err := os.MkdirAll(piSessionDir, 0o755); err != nil {
+		return 1, fmt.Errorf("create pi session dir: %w", err)
+	}
+
 	mounts := []docker.Mount{
 		{Host: wtPath, Container: "/workspace"},
-		{Host: filepath.Join(homeDir, ".pi", "agent"), Container: "/home/agent/.pi/agent"},
+		{Host: piAgentDir, Container: "/home/agent/.pi/agent"},
+		{Host: piSessionDir, Container: "/tmp/pi-sessions"},
 	}
 
 	gradleInitD := filepath.Join(homeDir, ".gradle", "init.d")
@@ -1275,6 +1309,7 @@ func runAgentInDockerRerun(repoRoot string, state *config.State, prompt string, 
 			envVarsRerun = append(envVarsRerun, key+"="+cfgVal)
 		}
 	}
+	envVarsRerun = append(envVarsRerun, "PI_CODING_AGENT_DIR=/home/agent/.pi/agent")
 	envVarsRerun = append(envVarsRerun, "PI_CODING_AGENT_SESSION_DIR=/tmp/pi-sessions")
 	for k, v := range rerunUserCfg.ExtraEnv {
 		envVarsRerun = append(envVarsRerun, k+"="+v)
@@ -1851,6 +1886,7 @@ func buildInteractiveEnvVars(userCfg config.UserConfig) []string {
 			envVars = append(envVars, key+"="+cfgVal)
 		}
 	}
+	envVars = append(envVars, "PI_CODING_AGENT_DIR=/home/agent/.pi/agent")
 	envVars = append(envVars, "PI_CODING_AGENT_SESSION_DIR=/tmp/pi-sessions")
 	for k, v := range userCfg.ExtraEnv {
 		envVars = append(envVars, k+"="+v)
@@ -2483,6 +2519,12 @@ func startInteractiveSession(repoRoot string, state *config.State, userCfg confi
 		return "", fmt.Errorf("get home dir: %w", err)
 	}
 
+	// Create pi agent config directory for this session
+	piAgentDir, err := config.GeneratePIAgentDirWithConfig(repoRoot, state.Name, &userCfg)
+	if err != nil {
+		return "", fmt.Errorf("generate pi agent dir: %w", err)
+	}
+
 	// Create pi session directory for mounting into container
 	piSessionDir, err := config.PiSessionDir(repoRoot, state.Name)
 	if err != nil {
@@ -2493,7 +2535,7 @@ func startInteractiveSession(repoRoot string, state *config.State, userCfg confi
 	}
 
 	mounts := []docker.Mount{
-		{Host: filepath.Join(homeDir, ".pi", "agent"), Container: "/home/agent/.pi/agent"},
+		{Host: piAgentDir, Container: "/home/agent/.pi/agent"},
 		{Host: piSessionDir, Container: "/tmp/pi-sessions"},
 	}
 	workdir := ""
@@ -2530,6 +2572,7 @@ func startInteractiveSession(repoRoot string, state *config.State, userCfg confi
 			envVars = append(envVars, key+"="+cfgVal)
 		}
 	}
+	envVars = append(envVars, "PI_CODING_AGENT_DIR=/home/agent/.pi/agent")
 	envVars = append(envVars, "PI_CODING_AGENT_SESSION_DIR=/tmp/pi-sessions")
 	for k, v := range userCfg.ExtraEnv {
 		envVars = append(envVars, k+"="+v)

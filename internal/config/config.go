@@ -35,6 +35,28 @@ type UserConfig struct {
 	MaxTurns        int               `json:"max_turns,omitempty"`
 	MaxOutputTokens int               `json:"max_output_tokens,omitempty"`
 	ExtraEnv        map[string]string `json:"extra_env,omitempty"`
+	PIAgent         PIAgentConfig     `json:"pi_agent,omitempty"`
+}
+
+// PIAgentConfig holds Cerberus-generated PI agent configuration for containers.
+type PIAgentConfig struct {
+	// Auth configuration path (e.g., auth.json for credentials)
+	AuthPath string `json:"auth_path,omitempty"`
+	// Models configuration path (e.g., models.json for provider definitions)
+	ModelsPath string `json:"models_path,omitempty"`
+	// Settings configuration path
+	SettingsPath string `json:"settings_path,omitempty"`
+	// AGENTS section: source, template, default config
+	AGENTS struct {
+		Source   string `json:"source,omitempty"`   // AGENTS source URL or path
+		Template string `json:"template,omitempty"` // AGENTS template name
+		Default  string `json:"default,omitempty"`  // Default AGENTS config
+	} `json:"agents,omitempty"`
+	// PI resource paths (mounted from host or generated)
+	ExtensionsPath string `json:"extensions_path,omitempty"` // Extensions directory
+	SkillsPath     string `json:"skills_path,omitempty"`     // Skills directory
+	PromptsPath    string `json:"prompts_path,omitempty"`    // Prompts directory
+	ThemesPath     string `json:"themes_path,omitempty"`     // Themes directory
 }
 
 // ProfileFile holds provider-specific overrides that replace fields in UserConfig.
@@ -45,6 +67,7 @@ type ProfileFile struct {
 	AWSProfile   string            `json:"aws_profile,omitempty"`
 	AWSRegion    string            `json:"aws_region,omitempty"`
 	ExtraEnv     map[string]string `json:"extra_env,omitempty"`
+	PIAgent      PIAgentConfig     `json:"pi_agent,omitempty"`
 }
 
 // LoadProfileFile reads a ProfileFile from the given path.
@@ -62,6 +85,7 @@ func LoadProfileFile(path string) (ProfileFile, error) {
 
 // ApplyProfile overwrites UserConfig fields with non-empty values from the ProfileFile.
 // ExtraEnv is always replaced wholesale when the profile sets it (even if empty map).
+// PIAgent fields are merged/overridden: non-empty profile values override config values.
 func ApplyProfile(cfg *UserConfig, p ProfileFile) {
 	if p.DefaultModel != "" {
 		cfg.DefaultModel = p.DefaultModel
@@ -76,6 +100,43 @@ func ApplyProfile(cfg *UserConfig, p ProfileFile) {
 		cfg.AWSRegion = p.AWSRegion
 	}
 	cfg.ExtraEnv = p.ExtraEnv
+
+	// Merge pi_agent configuration: profile values override config values when set
+	if p.PIAgent.AuthPath != "" {
+		cfg.PIAgent.AuthPath = p.PIAgent.AuthPath
+	}
+	if p.PIAgent.ModelsPath != "" {
+		cfg.PIAgent.ModelsPath = p.PIAgent.ModelsPath
+	}
+	if p.PIAgent.SettingsPath != "" {
+		cfg.PIAgent.SettingsPath = p.PIAgent.SettingsPath
+	}
+	if p.PIAgent.AGENTS.Source != "" {
+		cfg.PIAgent.AGENTS.Source = p.PIAgent.AGENTS.Source
+	}
+	if p.PIAgent.AGENTS.Template != "" {
+		cfg.PIAgent.AGENTS.Template = p.PIAgent.AGENTS.Template
+	}
+	if p.PIAgent.AGENTS.Default != "" {
+		cfg.PIAgent.AGENTS.Default = p.PIAgent.AGENTS.Default
+	}
+	if p.PIAgent.ExtensionsPath != "" {
+		cfg.PIAgent.ExtensionsPath = p.PIAgent.ExtensionsPath
+	}
+	if p.PIAgent.SkillsPath != "" {
+		cfg.PIAgent.SkillsPath = p.PIAgent.SkillsPath
+	}
+	if p.PIAgent.PromptsPath != "" {
+		cfg.PIAgent.PromptsPath = p.PIAgent.PromptsPath
+	}
+	if p.PIAgent.ThemesPath != "" {
+		cfg.PIAgent.ThemesPath = p.PIAgent.ThemesPath
+	}
+}
+
+// PIAgentProfile extracts the PI agent config from a profile file.
+func (p ProfileFile) PIAgentProfile() PIAgentConfig {
+	return p.PIAgent
 }
 
 // EffectiveMaxTurns returns MaxTurns if set, otherwise the default.
@@ -273,6 +334,28 @@ func PiSessionDir(repoRoot, sessionName string) (string, error) {
 		return "", err
 	}
 	return filepath.Join(dir, "pi-sessions"), nil
+}
+
+// PiAgentDir returns the generated per-session PI agent config directory.
+// This directory is created fresh for each session and contains the generated agent configuration.
+func PiAgentDir(repoRoot, sessionName string) (string, error) {
+	dir, err := sessionDir(repoRoot, sessionName)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "pi-agent"), nil
+}
+
+// GeneratePIAgentDir creates and initializes the PI agent config directory for a session.
+// Returns the path to the generated directory.
+// GeneratePIAgentDir creates and initializes the PI agent config directory for a session.
+// It loads the user config and populates the directory with configured paths.
+func GeneratePIAgentDir(repoRoot, sessionName string) (string, error) {
+	userCfg, err := LoadUserConfig()
+	if err != nil {
+		userCfg = UserConfig{}
+	}
+	return GeneratePIAgentDirWithConfig(repoRoot, sessionName, &userCfg)
 }
 
 // ListSessions returns the names of all sessions that have a state file in the repo.

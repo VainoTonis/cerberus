@@ -57,10 +57,78 @@ Create `~/.config/cerberus/config.json`:
 | `aws_region` | AWS region for Bedrock (defaults to us-east-1) |
 | `max_turns` | Max conversation turns per session (default: 10) |
 | `max_output_tokens` | Max output tokens before killing agent (default: 50000) |
+| `pi_agent` | PI agent configuration (see below) |
+
+#### PI Agent Configuration
+
+The optional `pi_agent` object allows per-session PI agent configuration:
+
+```json
+{
+  "pi_agent": {
+    "auth_path": "~/.pi/agent/auth.json",
+    "models_path": "~/.pi/agent/models.json",
+    "settings_path": "~/.pi/agent/settings.json",
+    "agents": {
+      "source": "",
+      "template": "",
+      "default": ""
+    },
+    "extensions_path": "~/.pi/agent/extensions",
+    "skills_path": "~/.pi/agent/skills",
+    "prompts_path": "~/.pi/agent/prompts",
+    "themes_path": "~/.pi/agent/themes"
+  }
+}
+```
+
+Each session gets a generated per-session PI agent directory mounted at `/home/agent/.pi/agent` in the container. This allows configuration isolation across sessions. The following environment variables are set in containers:
+
+- `PI_CODING_AGENT_DIR=/home/agent/.pi/agent` — mounted session-specific agent config
+- `PI_CODING_AGENT_SESSION_DIR=/tmp/pi-sessions` — conversation history persistence
+
+#### Where does the container's PI config actually come from?
+
+Two separate things on the host, do not confuse them:
+
+- **`~/.cerberus/`** — Cerberus's own state. `~/.cerberus/config.json` holds Cerberus settings (`default_model`, `aws_profile`, `max_turns`, `instructions`, and the `pi_agent.*` fields documented above). Per-session generated PI config and conversation history live under `~/.cerberus/repos/<repo>-<hash>/sessions/<name>/{pi-agent,pi-sessions}/` — this is what actually gets mounted into the container.
+- **`~/.pi/agent/`** — your personal host PI install. This is only ever used as an optional *source* to copy from when generating a session's `pi-agent/` directory. It is never mounted into a container directly.
+
+The container never sees your host `~/.pi/agent/` directly — only a freshly generated copy, scoped by what `pi_agent.*` you configure.
+
+#### Auth / models / settings: default fallback to host
+
+`auth_path`, `models_path`, `settings_path` behave the same way:
+
+- If left empty in config, Cerberus looks for `~/.pi/agent/auth.json` (etc.) on the host and copies it if present, otherwise writes an empty `{}`. Never errors.
+- If you set an explicit path, that path must exist and be readable — Cerberus fails loudly (hard error, no silent fallback) if it doesn't.
+
+#### Plugins / skills / extensions / prompts / themes: NOT copied by default
+
+Unlike auth/models/settings, `extensions_path`, `skills_path`, `prompts_path`, `themes_path` have **no fallback to `~/.pi/agent/...`**. If left empty, the container simply has no `extensions/`, `skills/`, `prompts/`, `themes/` directories — a clean, plugin-free PI instance. Your main PI install's plugins are **not** copied in automatically.
+
+To give a session access to your host skills/extensions, set the path explicitly:
+
+```json
+{
+  "pi_agent": {
+    "skills_path": "~/.pi/agent/skills",
+    "extensions_path": "~/.pi/agent/extensions"
+  }
+}
+```
+
+Each configured path is recursively copied (real files, never symlinks — symlinks would break inside the container) into the generated `pi-agent/` directory at session-start time.
+
+Caveats:
+
+- This is a **one-time copy at session generation**, not a live mount. Host changes made after a session starts won't appear until a new session is generated.
+- If a configured path doesn't exist, generation fails with a hard error (it does not silently skip).
+- npm-installed pi packages (`pi install npm:...`) live under `~/.pi/agent/npm/` on the host. Copying `settings.json` alone does **not** bring those package files along — if `settings.json` references npm packages, they will fail to resolve inside the container unless that `npm/` directory is also made available (there is currently no dedicated `pi_agent` field for this — a gap, not yet supported).
 
 ### Agent (pi) Configuration
 
-The `pi` agent reads its provider and model config from `~/.pi/agent/models.json` on the host. This file is mounted into every agent container at `/root/.pi/agent/models.json`.
+The `pi` agent reads its provider and model config from `~/.pi/agent/models.json` on the host. This file is copied into the generated per-session PI agent directory and mounted into the agent container at `/home/agent/.pi/agent/models.json`.
 
 For Ollama, the `baseUrl` must point to the container hostname on `sandbox-internal`, not `localhost`:
 
@@ -96,7 +164,7 @@ For Ollama, the `baseUrl` must point to the container hostname on `sandbox-inter
 
 ## Profiles
 
-A profile file overrides model, image, and env vars for a single run without touching your global config. Useful for switching providers (e.g. a local Ollama model vs Bedrock).
+A profile file overrides model, image, env vars, and PI agent config for a single run without touching your global config. Useful for switching providers (e.g. a local Ollama model vs Bedrock).
 
 Create a JSON file anywhere:
 
@@ -106,6 +174,10 @@ Create a JSON file anywhere:
   "default_image": "my-agent-image",
   "extra_env": {
     "SOME_VAR": "value"
+  },
+  "pi_agent": {
+    "models_path": "/path/to/custom/models.json",
+    "auth_path": "/path/to/custom/auth.json"
   }
 }
 ```
