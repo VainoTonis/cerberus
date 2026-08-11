@@ -423,7 +423,7 @@ Event types: `session_start`, `text_delta`, `tool_use`, `tool_result`, `message_
 
 ### `--callback <url>`
 
-POST each event as JSON to the given URL. Callback errors are logged to stderr but do not stop the run. Can be combined with `--output`:
+POST each event as JSON to the given URL. Callback delivery failures (unreachable URL, non-2xx responses, etc.) are logged to stderr and never abort a run. Can be combined with `--output`:
 
 ```bash
 cerberus start --output jsonl --callback https://example.com/hook --prompt "fix the bug"
