@@ -58,7 +58,7 @@ Create `~/.config/cerberus/config.json`:
 | `max_turns` | Max conversation turns per session (default: 10) |
 | `max_output_tokens` | Max output tokens before killing agent (default: 50000) |
 | `pi_agent` | PI agent configuration (see below) |
-| `callback_url` | Default URL to POST events to when `--callback` is not passed; empty disables (default: disabled) |
+| `callback_url` | Default URL to POST events to when `--callback` is not passed; empty disables (default: disabled). Payloads are always JSON and independent of `--output`, which only controls stdout format |
 
 #### PI Agent Configuration
 

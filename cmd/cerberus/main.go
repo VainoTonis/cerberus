@@ -883,7 +883,7 @@ func runAgentInDocker(repoRoot string, state *config.State, prompt string, agent
 	ctx, cancelRun := context.WithCancel(context.Background())
 	defer cancelRun()
 
-	output, callback = resolveCallback(callback, output, userCfg.CallbackURL)
+	callback = effectiveCallback(callback, userCfg.CallbackURL)
 	emitter := buildEmitter(sessionName, output, callback)
 
 	proc := stream.NewProcessor(sessionName, emitter, logFile, stream.Limits{
@@ -1302,7 +1302,7 @@ func runAgentInDockerRerun(repoRoot string, state *config.State, prompt string, 
 	rerunCtx, cancelRerun := context.WithCancel(context.Background())
 	defer cancelRerun()
 
-	output, callback = resolveCallback(callback, output, rerunUserCfg.CallbackURL)
+	callback = effectiveCallback(callback, rerunUserCfg.CallbackURL)
 	emitter := buildEmitter(sessionName, output, callback)
 
 	proc := stream.NewProcessor(sessionName, emitter, logFile, stream.Limits{
@@ -1941,18 +1941,14 @@ func printJSONSummary(state *config.State) {
 	fmt.Println(string(data))
 }
 
-// resolveCallback determines the effective callback URL and output mode, falling back to the
-// config-level default callback URL when --callback is not passed. An explicit --callback flag
-// always wins. When falling back to the config value, jsonl event emission is force-enabled so
-// events are actually produced, matching passing --callback --output jsonl explicitly.
-func resolveCallback(callback, output, cfgCallbackURL string) (string, string) {
-	if callback != "" {
-		return callback, output
+// effectiveCallback resolves the callback URL: an explicit --callback flag always wins,
+// otherwise the config-level default is used. Callback payloads are always JSON, so this
+// is independent of --output, which only selects the stdout emitter.
+func effectiveCallback(flag, cfgCallbackURL string) string {
+	if flag != "" {
+		return flag
 	}
-	if cfgCallbackURL != "" {
-		return cfgCallbackURL, "jsonl"
-	}
-	return callback, output
+	return cfgCallbackURL
 }
 
 // buildEmitter constructs the appropriate event emitter based on --output and --callback flags.
@@ -2538,10 +2534,7 @@ func cmdTurn() error {
 	}
 
 	// Run the turn
-	callbackURL := input.CallbackURL
-	if callbackURL == "" {
-		callbackURL = userCfg.CallbackURL
-	}
+	callbackURL := effectiveCallback(input.CallbackURL, userCfg.CallbackURL)
 	emitter := buildJSONEmitter(callbackURL)
 	defer emitter.Close()
 
