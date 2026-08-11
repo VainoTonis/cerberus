@@ -159,6 +159,13 @@ You are working inside an isolated container workspace.
 - Run relevant tests or explain exactly why they were not run.
 - If a needed command or file is missing, report it clearly instead of inventing a workaround.
 
+## Tool Use
+
+- Batch independent tool calls into a single turn rather than issuing one call per turn.
+- Never scan from the filesystem root; search from the workspace root with explicit paths.
+- Always bound command output, since large typecheck or test dumps stay in context for every later turn.
+- Do not re-read a file that has not changed.
+
 ## Communication
 
 Be concise. Report files changed, tests run, and any risks.

@@ -3,8 +3,88 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
+
+func TestGenerateAgentsMDDefaultIncludesToolUseGuidance(t *testing.T) {
+	agentDir := t.TempDir()
+
+	err := generateAgentsMD(agentDir, PIAgentConfig{})
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(agentDir, "AGENTS.md"))
+	if err != nil {
+		t.Fatalf("expected AGENTS.md to exist, got: %v", err)
+	}
+	content := string(data)
+
+	if !strings.Contains(content, "## Tool Use") {
+		t.Fatalf("expected default AGENTS.md to contain Tool Use section, got: %s", content)
+	}
+	for _, snippet := range []string{
+		"Batch independent tool calls into a single turn",
+		"Never scan from the filesystem root",
+		"Always bound command output",
+		"Do not re-read a file that has not changed",
+	} {
+		if !strings.Contains(content, snippet) {
+			t.Fatalf("expected default AGENTS.md to contain %q, got: %s", snippet, content)
+		}
+	}
+
+	// Existing rules and communication section still present.
+	if !strings.Contains(content, "## Core Rules") || !strings.Contains(content, "## Communication") {
+		t.Fatalf("expected default AGENTS.md to retain Core Rules and Communication sections, got: %s", content)
+	}
+}
+
+func TestGenerateAgentsMDCustomDefaultUnaffected(t *testing.T) {
+	agentDir := t.TempDir()
+	custom := "# Custom AGENTS\n\nCustom instructions.\n"
+
+	cfg := PIAgentConfig{}
+	cfg.AGENTS.Default = custom
+	err := generateAgentsMD(agentDir, cfg)
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(agentDir, "AGENTS.md"))
+	if err != nil {
+		t.Fatalf("expected AGENTS.md to exist, got: %v", err)
+	}
+	if string(data) != custom {
+		t.Fatalf("expected custom AGENTS.md content to be unaffected, got: %s", string(data))
+	}
+}
+
+func TestGenerateAgentsMDCustomSourceUnaffected(t *testing.T) {
+	agentDir := t.TempDir()
+	sourceDir := t.TempDir()
+	sourcePath := filepath.Join(sourceDir, "AGENTS.md")
+	custom := "# Source AGENTS\n\nSource instructions.\n"
+	if err := os.WriteFile(sourcePath, []byte(custom), 0o644); err != nil {
+		t.Fatalf("failed to write source file: %v", err)
+	}
+
+	cfg := PIAgentConfig{}
+	cfg.AGENTS.Source = sourcePath
+	err := generateAgentsMD(agentDir, cfg)
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(agentDir, "AGENTS.md"))
+	if err != nil {
+		t.Fatalf("expected AGENTS.md to exist, got: %v", err)
+	}
+	if string(data) != custom {
+		t.Fatalf("expected source AGENTS.md content to be unaffected, got: %s", string(data))
+	}
+}
 
 func TestCopyConfigFileDefaultPath(t *testing.T) {
 	// Test: default path (empty configPath) should create empty JSON if not found
