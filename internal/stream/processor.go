@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"time"
 
 	"github.com/tonis/cerberus/internal/event"
 )
@@ -19,6 +20,14 @@ type Stats struct {
 	CostUSD          float64
 	Turns            int
 	SessionID        string
+
+	// ToolCalls is the number of tool_execution_start events observed.
+	ToolCalls int
+	// LimitReason is set when a turn or output-token limit causes cancellation.
+	LimitReason string
+	// ToolExecTime is the wall-clock time spent inside tool execution
+	// (between tool_execution_start and its matching tool_execution_end).
+	ToolExecTime time.Duration
 }
 
 // Limits configures when to kill the agent.
@@ -30,21 +39,24 @@ type Limits struct {
 // Processor reads pi JSON events from a reader, emits structured events,
 // tracks token usage, and enforces turn/token limits.
 type Processor struct {
-	session string
-	emitter event.Emitter
-	logW    io.Writer
-	limits  Limits
-	cancel  func()
-	stats   Stats
+	session   string
+	emitter   event.Emitter
+	logW      io.Writer
+	limits    Limits
+	cancel    func()
+	stats     Stats
+	canceled  bool
+	toolStart map[string]time.Time
 }
 
 func NewProcessor(session string, emitter event.Emitter, logW io.Writer, limits Limits, cancel func()) *Processor {
 	return &Processor{
-		session: session,
-		emitter: emitter,
-		logW:    logW,
-		limits:  limits,
-		cancel:  cancel,
+		session:   session,
+		emitter:   emitter,
+		logW:      logW,
+		limits:    limits,
+		cancel:    cancel,
+		toolStart: make(map[string]time.Time),
 	}
 }
 
@@ -127,7 +139,19 @@ func (p *Processor) Process(r io.Reader) Stats {
 			e.ToolInput = string(toolInput)
 			p.emitter.Emit(e)
 
+		case ev.Type == "tool_execution_start":
+			p.stats.ToolCalls++
+			if ev.ToolCallID != "" {
+				p.toolStart[ev.ToolCallID] = time.Now()
+			}
+
 		case ev.Type == "tool_execution_end":
+			if ev.ToolCallID != "" {
+				if start, ok := p.toolStart[ev.ToolCallID]; ok {
+					p.stats.ToolExecTime += time.Since(start)
+					delete(p.toolStart, ev.ToolCallID)
+				}
+			}
 			e := event.New(event.ToolResult, p.session)
 			e.ToolName = ev.ToolName
 			if len(ev.Result.Content) > 0 {
@@ -154,16 +178,20 @@ func (p *Processor) Process(r io.Reader) Stats {
 			p.emitter.Emit(e)
 
 			if p.limits.MaxTurns > 0 && p.stats.Turns >= p.limits.MaxTurns {
-				fmt.Fprintf(os.Stderr, "[%s] turn limit reached (%d turns)\n", p.session, p.stats.Turns)
-				if p.cancel != nil {
-					p.cancel()
+				reason := fmt.Sprintf("turn limit reached (%d turns)", p.stats.Turns)
+				fmt.Fprintf(os.Stderr, "[%s] %s\n", p.session, reason)
+				if p.stats.LimitReason == "" {
+					p.stats.LimitReason = reason
 				}
+				p.doCancel()
 			}
 			if p.limits.MaxOutputTokens > 0 && p.stats.OutputTokens >= p.limits.MaxOutputTokens {
-				fmt.Fprintf(os.Stderr, "[%s] output token limit reached (%d tokens)\n", p.session, p.stats.OutputTokens)
-				if p.cancel != nil {
-					p.cancel()
+				reason := fmt.Sprintf("output token limit reached (%d tokens)", p.stats.OutputTokens)
+				fmt.Fprintf(os.Stderr, "[%s] %s\n", p.session, reason)
+				if p.stats.LimitReason == "" {
+					p.stats.LimitReason = reason
 				}
+				p.doCancel()
 			}
 
 		default:
@@ -179,4 +207,15 @@ func (p *Processor) Process(r io.Reader) Stats {
 // Stats returns the current accumulated stats (safe to call after Process returns).
 func (p *Processor) Stats() Stats {
 	return p.stats
+}
+
+// doCancel invokes the cancel function at most once.
+func (p *Processor) doCancel() {
+	if p.canceled {
+		return
+	}
+	p.canceled = true
+	if p.cancel != nil {
+		p.cancel()
+	}
 }

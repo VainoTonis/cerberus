@@ -740,7 +740,11 @@ func cmdStart(sessionName, prompt, promptFile, agentFlag, modelFlag, imageFlag, 
 
 	if exitCode != 0 {
 		state.Run.Status = config.StatusFailed
-		state.Run.FailReason = fmt.Sprintf("exit code %d", exitCode)
+		if state.Run.LimitReason != "" {
+			state.Run.FailReason = state.Run.LimitReason
+		} else {
+			state.Run.FailReason = fmt.Sprintf("exit code %d", exitCode)
+		}
 		state.Run.ExitCode = exitCode
 		state.Run.FinishedAt = time.Now()
 		if err := config.Save(repoRoot, state); err != nil {
@@ -939,6 +943,11 @@ func runAgentInDocker(repoRoot string, state *config.State, prompt string, agent
 	state.Run.CacheReadTokens = stats.CacheReadTokens
 	state.Run.CacheWriteTokens = stats.CacheWriteTokens
 	state.Run.CostUSD = stats.CostUSD
+	state.Run.ToolCalls = stats.ToolCalls
+	state.Run.ToolExecTimeMS = stats.ToolExecTime.Milliseconds()
+	if stats.LimitReason != "" {
+		state.Run.LimitReason = stats.LimitReason
+	}
 	config.Save(repoRoot, state)
 
 	emitter.Close()
@@ -1169,7 +1178,11 @@ func cmdRerun(name, prompt, promptFile, profileFile, output, callback, invoker, 
 
 	if exitCode != 0 {
 		state.Run.Status = config.StatusFailed
-		state.Run.FailReason = fmt.Sprintf("exit code %d", exitCode)
+		if state.Run.LimitReason != "" {
+			state.Run.FailReason = state.Run.LimitReason
+		} else {
+			state.Run.FailReason = fmt.Sprintf("exit code %d", exitCode)
+		}
 		state.Run.ExitCode = exitCode
 		state.Run.FinishedAt = time.Now()
 		config.Save(repoRoot, state)
@@ -1345,6 +1358,11 @@ func runAgentInDockerRerun(repoRoot string, state *config.State, prompt string, 
 	state.Run.CacheReadTokens += stats.CacheReadTokens
 	state.Run.CacheWriteTokens += stats.CacheWriteTokens
 	state.Run.CostUSD += stats.CostUSD
+	state.Run.ToolCalls += stats.ToolCalls
+	state.Run.ToolExecTimeMS += stats.ToolExecTime.Milliseconds()
+	if stats.LimitReason != "" {
+		state.Run.LimitReason = stats.LimitReason
+	}
 	config.Save(repoRoot, state)
 
 	emitter.Close()
@@ -1805,6 +1823,8 @@ func appendStats(state *config.State) error {
 		InvokedBy:        r.InvokedBy,
 		Interactive:      r.Interactive,
 		Orchestrator:     r.Orchestrator,
+		ToolCalls:        r.ToolCalls,
+		ToolExecTimeMS:   r.ToolExecTimeMS,
 	}
 
 	return config.AppendStats(rec)
@@ -1969,6 +1989,11 @@ func runTurnViaExecJSON(repoRoot string, state *config.State, prompt string, use
 	state.Run.CacheReadTokens += stats.CacheReadTokens
 	state.Run.CacheWriteTokens += stats.CacheWriteTokens
 	state.Run.CostUSD += stats.CostUSD
+	state.Run.ToolCalls += stats.ToolCalls
+	state.Run.ToolExecTimeMS += stats.ToolExecTime.Milliseconds()
+	if stats.LimitReason != "" {
+		state.Run.LimitReason = stats.LimitReason
+	}
 	config.Save(repoRoot, state)
 
 	if err != nil {
@@ -2036,6 +2061,11 @@ func runTurnViaExec(repoRoot string, state *config.State, prompt string, userCfg
 	state.Run.CacheReadTokens += stats.CacheReadTokens
 	state.Run.CacheWriteTokens += stats.CacheWriteTokens
 	state.Run.CostUSD += stats.CostUSD
+	state.Run.ToolCalls += stats.ToolCalls
+	state.Run.ToolExecTimeMS += stats.ToolExecTime.Milliseconds()
+	if stats.LimitReason != "" {
+		state.Run.LimitReason = stats.LimitReason
+	}
 	config.Save(repoRoot, state)
 
 	if err != nil {

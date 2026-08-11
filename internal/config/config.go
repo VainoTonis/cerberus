@@ -289,6 +289,9 @@ type Run struct {
 	UUID             string        `json:"uuid,omitempty"`
 	MessageCache     *MessageCache `json:"message_cache,omitempty"`
 	CheckpointSlot   string        `json:"checkpoint_slot,omitempty"`
+	ToolCalls        int           `json:"tool_calls,omitempty"`
+	LimitReason      string        `json:"limit_reason,omitempty"`
+	ToolExecTimeMS   int64         `json:"tool_exec_time_ms,omitempty"`
 }
 
 type State struct {
@@ -464,6 +467,8 @@ type StatsRecord struct {
 	InvokedBy        string    `json:"invoked_by,omitempty"`
 	Orchestrator     string    `json:"orchestrator,omitempty"`
 	Interactive      bool      `json:"interactive,omitempty"`
+	ToolCalls        int       `json:"tool_calls,omitempty"`
+	ToolExecTimeMS   int64     `json:"tool_exec_time_ms,omitempty"`
 }
 
 func statsPath() (string, error) {
