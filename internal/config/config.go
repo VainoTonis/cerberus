@@ -292,6 +292,7 @@ type Run struct {
 	ToolCalls        int           `json:"tool_calls,omitempty"`
 	LimitReason      string        `json:"limit_reason,omitempty"`
 	ToolExecTimeMS   int64         `json:"tool_exec_time_ms,omitempty"`
+	Turns            int           `json:"turns,omitempty"`
 }
 
 type State struct {
@@ -469,6 +470,7 @@ type StatsRecord struct {
 	Interactive      bool      `json:"interactive,omitempty"`
 	ToolCalls        int       `json:"tool_calls,omitempty"`
 	ToolExecTimeMS   int64     `json:"tool_exec_time_ms,omitempty"`
+	Turns            int       `json:"turns,omitempty"`
 }
 
 func statsPath() (string, error) {

@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"syscall"
@@ -291,13 +292,18 @@ func cmdApply(name string) error {
 }
 
 func cmdStatsCommand() *cobra.Command {
+	var limit int
+	var sortBy string
 	cmd := &cobra.Command{
 		Use:   "stats",
 		Short: "Show performance statistics",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return cmdStats()
+			return cmdStats(limit, sortBy)
 		},
 	}
+
+	cmd.Flags().IntVarP(&limit, "limit", "n", 20, "maximum number of records to display")
+	cmd.Flags().StringVar(&sortBy, "sort", "date", "sort order: duration, date or cost")
 
 	return cmd
 }
@@ -945,6 +951,7 @@ func runAgentInDocker(repoRoot string, state *config.State, prompt string, agent
 	state.Run.CostUSD = stats.CostUSD
 	state.Run.ToolCalls = stats.ToolCalls
 	state.Run.ToolExecTimeMS = stats.ToolExecTime.Milliseconds()
+	state.Run.Turns = stats.Turns
 	if stats.LimitReason != "" {
 		state.Run.LimitReason = stats.LimitReason
 	}
@@ -1360,6 +1367,7 @@ func runAgentInDockerRerun(repoRoot string, state *config.State, prompt string, 
 	state.Run.CostUSD += stats.CostUSD
 	state.Run.ToolCalls += stats.ToolCalls
 	state.Run.ToolExecTimeMS += stats.ToolExecTime.Milliseconds()
+	state.Run.Turns += stats.Turns
 	if stats.LimitReason != "" {
 		state.Run.LimitReason = stats.LimitReason
 	}
@@ -1718,7 +1726,7 @@ func removeWorktreeViaGit(repoRoot, wtPath, branchName string) error {
 }
 
 // cmdStats reads and prints statistics.
-func cmdStats() error {
+func cmdStats(limit int, sortBy string) error {
 	records, err := config.LoadStats()
 	if err != nil {
 		return err
@@ -1729,16 +1737,30 @@ func cmdStats() error {
 		return nil
 	}
 
-	// Print flat per-session table with new columns
-	fmt.Printf("%-20s  %-16s  %-10s  %-11s  %-20s  %-20s  %-15s  %8s  %10s\n",
-		"Session", "Date", "Invoker", "Mode", "Status", "WorkDir", "Model", "Duration", "Cost")
-	fmt.Println(strings.Repeat("-", 147))
+	// Sort a copy of the records according to sortBy (default: date descending).
+	sorted := make([]config.StatsRecord, len(records))
+	copy(sorted, records)
 
-	// Reverse records to show most recent first, cap at 20
-	var displayRecords []config.StatsRecord
-	for i := len(records) - 1; i >= 0 && len(displayRecords) < 20; i-- {
-		displayRecords = append(displayRecords, records[i])
+	switch sortBy {
+	case "duration":
+		sort.Slice(sorted, func(i, j int) bool { return sorted[i].DurationS > sorted[j].DurationS })
+	case "cost":
+		sort.Slice(sorted, func(i, j int) bool { return sorted[i].CostUSD > sorted[j].CostUSD })
+	case "date", "":
+		sort.Slice(sorted, func(i, j int) bool { return sorted[i].SessionDate.After(sorted[j].SessionDate) })
+	default:
+		return fmt.Errorf("invalid --sort value %q: must be one of duration, date, cost", sortBy)
 	}
+
+	if limit <= 0 || limit > len(sorted) {
+		limit = len(sorted)
+	}
+	displayRecords := sorted[:limit]
+
+	// Print flat per-session table with new columns
+	fmt.Printf("%-20s  %-16s  %-10s  %-11s  %-20s  %-20s  %-15s  %8s  %10s  %6s  %10s\n",
+		"Session", "Date", "Invoker", "Mode", "Status", "WorkDir", "Model", "Duration", "Cost", "Turns", "Out tok/s")
+	fmt.Println(strings.Repeat("-", 172))
 
 	for _, rec := range displayRecords {
 		sessionDate := rec.SessionDate.Format("2006-01-02 15:04")
@@ -1782,12 +1804,86 @@ func cmdStats() error {
 			costStr = fmt.Sprintf("$%.4f", rec.CostUSD)
 		}
 
-		fmt.Printf("%-20s  %-16s  %-10s  %-11s  %-20s  %-20s  %-15s  %8s  %10s\n",
-			sessionName, sessionDate, invoker, mode, status, workDir, modelAgent, durationStr, costStr)
+		turnsStr := fmt.Sprintf("%d", rec.Turns)
+
+		tokPerSecStr := "-"
+		if rec.DurationS > 0 {
+			tokPerSecStr = fmt.Sprintf("%.1f", float64(rec.OutputTokens)/rec.DurationS)
+		}
+
+		fmt.Printf("%-20s  %-16s  %-10s  %-11s  %-20s  %-20s  %-15s  %8s  %10s  %6s  %10s\n",
+			sessionName, sessionDate, invoker, mode, status, workDir, modelAgent, durationStr, costStr, turnsStr, tokPerSecStr)
 	}
+
+	printStatsSummary(records)
 
 	fmt.Printf("\n%d session(s) recorded\n", len(records))
 	return nil
+}
+
+// printStatsSummary prints aggregate diagnostics (duration percentiles, median
+// turns, and count of limit-related failures) across all recorded sessions.
+func printStatsSummary(records []config.StatsRecord) {
+	durations := make([]float64, 0, len(records))
+	turns := make([]float64, 0, len(records))
+	limitFailures := 0
+
+	for _, rec := range records {
+		if rec.DurationS > 0 {
+			durations = append(durations, rec.DurationS)
+		}
+		turns = append(turns, float64(rec.Turns))
+		if strings.Contains(strings.ToLower(rec.FailReason), "limit") {
+			limitFailures++
+		}
+	}
+
+	medianDuration := percentile(durations, 50)
+	meanDuration := mean(durations)
+	p90Duration := percentile(durations, 90)
+	medianTurns := percentile(turns, 50)
+
+	fmt.Println()
+	fmt.Println("Summary:")
+	fmt.Printf("  duration: median=%.0fs mean=%.0fs p90=%.0fs\n", medianDuration, meanDuration, p90Duration)
+	fmt.Printf("  turns: median=%.0f\n", medianTurns)
+	fmt.Printf("  limit-related failures: %d\n", limitFailures)
+}
+
+// mean returns the arithmetic mean of vals, or 0 if vals is empty.
+func mean(vals []float64) float64 {
+	if len(vals) == 0 {
+		return 0
+	}
+	sum := 0.0
+	for _, v := range vals {
+		sum += v
+	}
+	return sum / float64(len(vals))
+}
+
+// percentile returns the p-th percentile (0-100) of vals using nearest-rank
+// interpolation. Returns 0 if vals is empty.
+func percentile(vals []float64, p float64) float64 {
+	if len(vals) == 0 {
+		return 0
+	}
+	sorted := make([]float64, len(vals))
+	copy(sorted, vals)
+	sort.Float64s(sorted)
+
+	if len(sorted) == 1 {
+		return sorted[0]
+	}
+
+	rank := p / 100 * float64(len(sorted)-1)
+	low := int(rank)
+	high := low + 1
+	if high >= len(sorted) {
+		return sorted[len(sorted)-1]
+	}
+	frac := rank - float64(low)
+	return sorted[low] + frac*(sorted[high]-sorted[low])
 }
 
 // appendStats appends a StatsRecord to the global stats file.
@@ -1825,6 +1921,7 @@ func appendStats(state *config.State) error {
 		Orchestrator:     r.Orchestrator,
 		ToolCalls:        r.ToolCalls,
 		ToolExecTimeMS:   r.ToolExecTimeMS,
+		Turns:            r.Turns,
 	}
 
 	return config.AppendStats(rec)
@@ -1991,6 +2088,7 @@ func runTurnViaExecJSON(repoRoot string, state *config.State, prompt string, use
 	state.Run.CostUSD += stats.CostUSD
 	state.Run.ToolCalls += stats.ToolCalls
 	state.Run.ToolExecTimeMS += stats.ToolExecTime.Milliseconds()
+	state.Run.Turns += stats.Turns
 	if stats.LimitReason != "" {
 		state.Run.LimitReason = stats.LimitReason
 	}
@@ -2063,6 +2161,7 @@ func runTurnViaExec(repoRoot string, state *config.State, prompt string, userCfg
 	state.Run.CostUSD += stats.CostUSD
 	state.Run.ToolCalls += stats.ToolCalls
 	state.Run.ToolExecTimeMS += stats.ToolExecTime.Milliseconds()
+	state.Run.Turns += stats.Turns
 	if stats.LimitReason != "" {
 		state.Run.LimitReason = stats.LimitReason
 	}
