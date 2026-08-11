@@ -371,6 +371,33 @@ For details, see `PROXY_PLAN.md`.
 
 Add `.cerberus/` to `.gitignore`.
 
+## Turn Budget and Run Cost
+
+`max_turns` is the main lever on run latency and wasted spend. Runs are turn-bound,
+not throughput-bound: the model generates at a normal rate, but every turn re-sends
+the whole conversation, so a run with a high turn budget spends most of its wall
+clock on round-trips and tool execution.
+
+Measured on a 748-session history with `max_turns: 150`:
+
+- median run 60s, mean 335s, p90 753s
+- the slowest sessions all stopped at exactly the turn limit
+- 33 sessions were killed by the limit, each 400-900s and up to $1.90, producing nothing
+
+A killed run now records a limit reason (for example `turn limit (60 turns)`) instead
+of `exit code -1`, and `turns` / `tool_calls` / `tool_exec_time_ms` are written to
+`stats.json`.
+
+Diagnose with:
+
+```bash
+cerberus stats --sort duration -n 50
+```
+
+Tradeoff: too low a budget truncates legitimate work; too high a budget turns a
+badly scoped task into a long, expensive dead run. When a task keeps hitting the
+limit, split the task into smaller sessions instead of raising the cap.
+
 ## Examples
 
 ### One-shot fix
