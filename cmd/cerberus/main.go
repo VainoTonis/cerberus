@@ -734,9 +734,7 @@ func cmdStart(sessionName, prompt, promptFile, agentFlag, modelFlag, imageFlag, 
 		fmt.Fprintf(os.Stderr, "warn: register repo: %v\n", err)
 	}
 
-	fmt.Printf("session: %s\n", sessionName)
-	fmt.Printf("branch:  %s (%s)\n", baseBranch, baseCommit[:8])
-	fmt.Printf("agent:   %s\n\n", agentFlag)
+	printSessionHeader(headerWriter(output), state, repoRoot, userCfg)
 
 	// Run agent in docker
 	exitCode, err := runAgentInDocker(repoRoot, state, resolvedPrompt, agentImpl, model, userCfg, output, callback)
@@ -1176,6 +1174,7 @@ func cmdRerun(name, prompt, promptFile, profileFile, output, callback, invoker, 
 
 	fmt.Fprintf(logFile, "\n--- rerun: %s ---\n", time.Now().Format(time.RFC3339))
 	fmt.Printf("rerunning session %q with new prompt...\n", sessionName)
+	printSessionHeader(headerWriter(output), state, repoRoot, userCfg)
 
 	// Run agent again
 	exitCode, err := runAgentInDockerRerun(repoRoot, state, resolvedPrompt, agentImpl, logFile, userCfg, output, callback)
@@ -1928,6 +1927,30 @@ func appendStats(state *config.State) error {
 }
 
 // printJSONSummary prints a machine-readable summary line.
+// headerWriter returns the writer to use for the session header: stderr for jsonl
+// output (to keep stdout machine-readable), stdout otherwise.
+func headerWriter(output string) io.Writer {
+	if output == "jsonl" {
+		return os.Stderr
+	}
+	return os.Stdout
+}
+
+// printSessionHeader prints a compact, aligned summary of the session/run so
+// a wrong-repo or wrong-target invocation is obvious at a glance.
+func printSessionHeader(w io.Writer, state *config.State, repoRoot string, userCfg config.UserConfig) {
+	shortCommit := state.BaseCommit
+	if len(shortCommit) > 8 {
+		shortCommit = shortCommit[:8]
+	}
+	fmt.Fprintf(w, "session:  %s\n", state.Name)
+	fmt.Fprintf(w, "repo:     %s (%s @ %s)\n", repoRoot, state.BaseBranch, shortCommit)
+	fmt.Fprintf(w, "worktree: %s -> /workspace\n", state.Run.Worktree)
+	fmt.Fprintf(w, "branch:   %s\n", state.Run.Branch)
+	fmt.Fprintf(w, "agent:    %s  model=%s  image=%s\n", state.Run.Agent, state.Run.Model, state.Run.Image)
+	fmt.Fprintf(w, "limits:   max_turns=%d  max_output_tokens=%d\n\n", userCfg.EffectiveMaxTurns(), userCfg.EffectiveMaxOutputTokens())
+}
+
 func printJSONSummary(state *config.State) {
 	r := &state.Run
 	summary := map[string]interface{}{
