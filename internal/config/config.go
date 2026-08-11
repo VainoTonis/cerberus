@@ -36,6 +36,7 @@ type UserConfig struct {
 	MaxOutputTokens int               `json:"max_output_tokens,omitempty"`
 	ExtraEnv        map[string]string `json:"extra_env,omitempty"`
 	PIAgent         PIAgentConfig     `json:"pi_agent,omitempty"`
+	CallbackURL     string            `json:"callback_url,omitempty"`
 }
 
 // PIAgentConfig holds Cerberus-generated PI agent configuration for containers.
