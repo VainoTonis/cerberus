@@ -27,4 +27,6 @@ clean:
 	rm -f $(BINARY)
 
 image:
+	rm -rf docker/.radar-src && cp -r ../frontmatter-radar docker/.radar-src
 	docker build -t cerberus-agent docker/
+	rm -rf docker/.radar-src

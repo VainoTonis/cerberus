@@ -1,11 +1,6 @@
 FROM golang:1.26.6-bookworm AS radar-builder
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    git \
-    ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
-
-RUN git clone --depth 1 https://github.com/tonis/frontmatter-radar.git /src/frontmatter-radar
+COPY .radar-src /src/frontmatter-radar
 WORKDIR /src/frontmatter-radar
 RUN CGO_ENABLED=0 go build -o /out/frontmatter-radar .
 
