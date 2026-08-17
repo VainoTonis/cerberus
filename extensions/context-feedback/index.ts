@@ -1,134 +1,118 @@
 /**
  * Context Feedback Extension
  *
- * A bundled base extension that inspects user input for a complete,
- * non-empty <orchestrator-context>...</orchestrator-context> block.
+ * Registers `report_context_feedback`, a tool the agent calls itself, as its
+ * final action, to report its own assessment of the quality of an
+ * <orchestrator-context>...</orchestrator-context> block that was supplied
+ * with the current prompt.
  *
- * When such a block is present, this extension activates and returns
- * host-mediated context quality feedback directly (no LLM call, no
- * network access, no filesystem access, no vault access). The feedback
- * is a deterministic, local assessment of the supplied context block:
+ * This extension does not assess context quality itself. It never inspects
+ * "input" events, never cancels tasks, never heuristically judges the
+ * context, and never notifies the UI. Its only job is:
  *
- *   - verdict: "useful" | "insufficient" | "irrelevant" | "conflicting"
- *   - reason: short human-readable explanation
- *   - confidence: "low" | "medium" | "high"
+ *   1. On `before_agent_start`, check whether the prompt contains a
+ *      complete, non-empty <orchestrator-context> block.
+ *   2. If so, activate `report_context_feedback` for this turn and inject a
+ *      single instruction telling the agent to call it exactly once, as its
+ *      final action, with its own honest assessment.
+ *   3. If not, do nothing — the prompt passes through completely unchanged.
  *
- * Any input that does not contain a complete, non-empty
- * <orchestrator-context> block passes through unchanged.
+ * The tool itself simply records the agent-authored verdict, reason, and
+ * confidence in its durable result `details` and terminates the turn.
  */
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { defineTool, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { StringEnum } from "@earendil-works/pi-ai";
+import { Type } from "typebox";
 
-type Verdict = "useful" | "insufficient" | "irrelevant" | "conflicting";
-type Confidence = "low" | "medium" | "high";
-
-interface ContextFeedback {
-	verdict: Verdict;
-	reason: string;
-	confidence: Confidence;
-}
+const TOOL_NAME = "report_context_feedback";
 
 const ORCHESTRATOR_CONTEXT_RE = /<orchestrator-context>([\s\S]*?)<\/orchestrator-context>/i;
 
-const CONFLICT_MARKERS = [
-	"conflicting information",
-	"contradicts",
-	"contradiction",
-	"inconsistent with",
-	"mutually exclusive",
-];
-
-const IRRELEVANT_MARKERS = [
-	"not related",
-	"unrelated",
-	"off-topic",
-	"off topic",
-	"irrelevant",
-	"no bearing on",
-	"does not apply",
-];
-
-const INSUFFICIENT_MARKERS = [
-	"todo",
-	"tbd",
-	"unknown",
-	"n/a",
-	"not specified",
-	"unspecified",
-	"unclear",
-	"no details",
-];
-
-/** Extracts a complete <orchestrator-context> block, if present and non-empty. */
-function extractOrchestratorContext(text: string): string | undefined {
+/** Returns true only if the prompt contains a complete, non-empty block. */
+function hasCompleteNonEmptyOrchestratorContext(text: string): boolean {
 	const match = ORCHESTRATOR_CONTEXT_RE.exec(text);
-	if (!match) return undefined;
+	if (!match) return false;
 	const content = match[1]?.trim();
-	if (!content) return undefined;
-	return content;
+	return Boolean(content);
 }
 
-function countMarkers(haystack: string, markers: string[]): number {
-	return markers.reduce((count, marker) => (haystack.includes(marker) ? count + 1 : count), 0);
+interface ContextFeedbackDetails {
+	verdict: "useful" | "insufficient" | "irrelevant" | "conflicting";
+	reason: string;
+	confidence: "low" | "medium" | "high";
 }
 
-/** Deterministic, host-local quality assessment of a context block. */
-function evaluateContext(content: string): ContextFeedback {
-	const lower = content.toLowerCase();
-	const wordCount = content.split(/\s+/).filter(Boolean).length;
+const reportContextFeedbackTool = defineTool({
+	name: TOOL_NAME,
+	label: "Report Context Feedback",
+	description:
+		"Report your own final assessment of the quality of the supplied orchestrator-context block. " +
+		"Call this exactly once, as your last action, after you have finished using the context.",
+	promptSnippet: "Report your final assessment of the supplied orchestrator-context block",
+	promptGuidelines: [
+		"Call report_context_feedback exactly once, as your final action, when an orchestrator-context block was supplied for this turn.",
+		"Base the report_context_feedback verdict, reason, and confidence on your own honest assessment, not a heuristic.",
+	],
+	parameters: Type.Object({
+		verdict: StringEnum(["useful", "insufficient", "irrelevant", "conflicting"] as const, {
+			description:
+				"Your assessment of the supplied context: useful, insufficient, irrelevant, or conflicting.",
+		}),
+		reason: Type.String({ description: "Short human-readable explanation for the verdict." }),
+		confidence: StringEnum(["low", "medium", "high"] as const, {
+			description: "Your confidence in this verdict: low, medium, or high.",
+		}),
+	}),
 
-	const conflictHits = countMarkers(lower, CONFLICT_MARKERS);
-	if (conflictHits > 0) {
-		return {
-			verdict: "conflicting",
-			reason: "Context explicitly describes contradictory or mutually exclusive information",
-			confidence: conflictHits > 1 ? "high" : "medium",
+	async execute(_toolCallId, params) {
+		const details: ContextFeedbackDetails = {
+			verdict: params.verdict,
+			reason: params.reason,
+			confidence: params.confidence,
 		};
-	}
 
-	const irrelevantHits = countMarkers(lower, IRRELEVANT_MARKERS);
-	if (irrelevantHits > 0) {
 		return {
-			verdict: "irrelevant",
-			reason: "Context indicates it does not relate to the task at hand",
-			confidence: irrelevantHits > 1 ? "high" : "medium",
+			content: [
+				{
+					type: "text",
+					text: `Context feedback recorded: ${params.verdict} (${params.confidence} confidence) — ${params.reason}`,
+				},
+			],
+			details,
+			terminate: true,
 		};
-	}
-
-	const insufficientHits = countMarkers(lower, INSUFFICIENT_MARKERS);
-	const tooShort = wordCount < 8;
-	if (insufficientHits > 0 || tooShort) {
-		return {
-			verdict: "insufficient",
-			reason: tooShort
-				? "Context is too short to provide actionable detail"
-				: "Context contains placeholders or unresolved gaps",
-			confidence: tooShort && insufficientHits > 0 ? "high" : "medium",
-		};
-	}
-
-	const richness = countMarkers(lower, ["because", "specifically", "for example", "e.g.", "step"]);
-	const confidence: Confidence = wordCount > 60 && richness > 0 ? "high" : wordCount > 20 ? "medium" : "low";
-
-	return {
-		verdict: "useful",
-		reason: "Context is specific, on-topic, and internally consistent",
-		confidence,
-	};
-}
+	},
+});
 
 export default function (pi: ExtensionAPI) {
-	pi.on("input", async (event, ctx) => {
-		const context = extractOrchestratorContext(event.text);
-		if (context === undefined) {
-			return { action: "continue" };
+	pi.registerTool(reportContextFeedbackTool);
+
+	// Keep the tool registered but inactive by default; unmarked tasks are
+	// left completely unchanged.
+	pi.on("session_start", () => {
+		const initialTools = pi.getActiveTools().filter((name) => name !== TOOL_NAME);
+		pi.setActiveTools(initialTools);
+	});
+
+	pi.on("before_agent_start", async (event) => {
+		if (!hasCompleteNonEmptyOrchestratorContext(event.prompt)) {
+			return;
 		}
 
-		const feedback = evaluateContext(context);
+		const active = pi.getActiveTools();
+		if (!active.includes(TOOL_NAME)) {
+			pi.setActiveTools([...active, TOOL_NAME]);
+		}
 
-		// Host-mediated feedback: computed locally and returned directly to the
-		// caller via the notification channel, without invoking the model.
-		ctx.ui.notify(JSON.stringify(feedback), "info");
-
-		return { action: "handled" };
+		return {
+			message: {
+				customType: "context-feedback-instruction",
+				content:
+					"An <orchestrator-context> block was supplied with this prompt. After you finish using it, " +
+					"call report_context_feedback exactly once, as your final action, with your own honest " +
+					"assessment (verdict, reason, confidence) of its quality.",
+				display: false,
+			},
+		};
 	});
 }
