@@ -36,4 +36,8 @@ RUN curl -fsSL "https://github.com/earendil-works/pi/releases/download/${PI_VERS
 RUN mkdir -p /workspace && chown -R agent:agent /workspace
 WORKDIR /workspace
 
+# Bundled base extensions (e.g. context-feedback)
+COPY extensions /home/agent/.pi/agent/extensions
+RUN chown -R agent:agent /home/agent/.pi
+
 USER agent
