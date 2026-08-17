@@ -27,4 +27,4 @@ clean:
 	rm -f $(BINARY)
 
 image:
-	docker build -t cerberus-agent docker/
+	docker build -t cerberus-agent -f docker/Dockerfile .
