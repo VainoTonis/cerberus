@@ -7,7 +7,7 @@ type Pi struct{}
 func (Pi) Name() string { return "pi" }
 
 func (Pi) Args(r RunArgs) ([]string, error) {
-	args := []string{"pi", "--mode", "json", "-e", "/home/agent/.pi/agent/extensions/context-feedback"}
+	args := []string{"pi", "--mode", "json", "-e", "/opt/cerberus/extensions/context-feedback/index.ts"}
 	if r.Interactive {
 		args = append(args, "--session-dir", "/tmp/pi-sessions")
 		if r.ContinueSession {

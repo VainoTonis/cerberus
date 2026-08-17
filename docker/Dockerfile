@@ -36,8 +36,9 @@ RUN curl -fsSL "https://github.com/earendil-works/pi/releases/download/${PI_VERS
 RUN mkdir -p /workspace && chown -R agent:agent /workspace
 WORKDIR /workspace
 
-# Bundled base extensions (e.g. context-feedback)
-COPY extensions /home/agent/.pi/agent/extensions
-RUN chown -R agent:agent /home/agent/.pi
+# Bundled base extensions (e.g. context-feedback), kept outside the
+# per-session ~/.pi/agent dir so it is never shadowed by runtime mounts
+COPY extensions /opt/cerberus/extensions
+RUN chown -R agent:agent /opt/cerberus
 
 USER agent
