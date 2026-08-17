@@ -1,9 +1,3 @@
-FROM golang:1.26.6-bookworm AS radar-builder
-
-COPY .radar-src /src/frontmatter-radar
-WORKDIR /src/frontmatter-radar
-RUN CGO_ENABLED=0 go build -o /out/frontmatter-radar .
-
 FROM debian:bookworm-slim
 
 ARG PI_VERSION=v0.84.1
@@ -38,10 +32,6 @@ RUN curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-l
 RUN curl -fsSL "https://github.com/earendil-works/pi/releases/download/${PI_VERSION}/pi-linux-x64.tar.gz" \
     | tar -C /opt -xz \
     && ln -s /opt/pi/pi /usr/local/bin/pi
-
-# frontmatter-radar CLI, built from source in the radar-builder stage
-COPY --from=radar-builder /out/frontmatter-radar /usr/local/bin/frontmatter-radar
-RUN chmod +x /usr/local/bin/frontmatter-radar
 
 RUN mkdir -p /workspace && chown -R agent:agent /workspace
 WORKDIR /workspace

@@ -855,9 +855,6 @@ func runAgentInDocker(repoRoot string, state *config.State, prompt string, agent
 		{Host: piAgentDir, Container: "/home/agent/.pi/agent"},
 		{Host: piSessionDir, Container: "/tmp/pi-sessions"},
 	}
-	for _, m := range userCfg.ExtraMounts {
-		mounts = append(mounts, docker.Mount{Host: m.Host, Container: m.Container, ReadOnly: m.ReadOnly})
-	}
 
 	gradleInitD := filepath.Join(homeDir, ".gradle", "init.d")
 	if _, err := os.Stat(gradleInitD); err == nil {
@@ -1277,9 +1274,6 @@ func runAgentInDockerRerun(repoRoot string, state *config.State, prompt string, 
 		{Host: wtPath, Container: "/workspace"},
 		{Host: piAgentDir, Container: "/home/agent/.pi/agent"},
 		{Host: piSessionDir, Container: "/tmp/pi-sessions"},
-	}
-	for _, m := range rerunUserCfg.ExtraMounts {
-		mounts = append(mounts, docker.Mount{Host: m.Host, Container: m.Container, ReadOnly: m.ReadOnly})
 	}
 
 	gradleInitD := filepath.Join(homeDir, ".gradle", "init.d")
@@ -2713,9 +2707,6 @@ func startInteractiveSession(repoRoot string, state *config.State, userCfg confi
 	if state.Run.Worktree != "" {
 		mounts = append(mounts, docker.Mount{Host: state.Run.Worktree, Container: "/workspace"})
 		workdir = "/workspace"
-	}
-	for _, m := range userCfg.ExtraMounts {
-		mounts = append(mounts, docker.Mount{Host: m.Host, Container: m.Container, ReadOnly: m.ReadOnly})
 	}
 
 	gradleInitD := filepath.Join(homeDir, ".gradle", "init.d")

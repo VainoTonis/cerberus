@@ -8,5 +8,3 @@
 *.test
 *.out
 
-# radar build context (copied at build time, never committed)
-docker/.radar-src/

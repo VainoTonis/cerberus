@@ -35,16 +35,8 @@ type UserConfig struct {
 	MaxTurns        int               `json:"max_turns,omitempty"`
 	MaxOutputTokens int               `json:"max_output_tokens,omitempty"`
 	ExtraEnv        map[string]string `json:"extra_env,omitempty"`
-	ExtraMounts     []ExtraMount      `json:"extra_mounts,omitempty"`
 	PIAgent         PIAgentConfig     `json:"pi_agent,omitempty"`
 	CallbackURL     string            `json:"callback_url,omitempty"`
-}
-
-// ExtraMount describes an additional bind mount to add to a session's container.
-type ExtraMount struct {
-	Host      string `json:"host"`
-	Container string `json:"container"`
-	ReadOnly  bool   `json:"read_only"`
 }
 
 // PIAgentConfig holds Cerberus-generated PI agent configuration for containers.
@@ -76,7 +68,6 @@ type ProfileFile struct {
 	AWSProfile   string            `json:"aws_profile,omitempty"`
 	AWSRegion    string            `json:"aws_region,omitempty"`
 	ExtraEnv     map[string]string `json:"extra_env,omitempty"`
-	ExtraMounts  []ExtraMount      `json:"extra_mounts,omitempty"`
 	PIAgent      PIAgentConfig     `json:"pi_agent,omitempty"`
 }
 
@@ -110,9 +101,6 @@ func ApplyProfile(cfg *UserConfig, p ProfileFile) {
 		cfg.AWSRegion = p.AWSRegion
 	}
 	cfg.ExtraEnv = p.ExtraEnv
-	if p.ExtraMounts != nil {
-		cfg.ExtraMounts = p.ExtraMounts
-	}
 
 	// Merge pi_agent configuration: profile values override config values when set
 	if p.PIAgent.AuthPath != "" {
