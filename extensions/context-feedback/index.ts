@@ -2,23 +2,28 @@
  * Context Feedback Extension
  *
  * Registers `report_context_feedback`, a tool the agent calls itself, as its
- * final action, to report its own assessment of the quality of an
- * <orchestrator-context>...</orchestrator-context> block that was supplied
- * with the current prompt.
+ * final action, to submit a universal feedback report for the current
+ * subagent turn.
  *
- * This extension does not assess context quality itself. It never inspects
- * "input" events, never cancels tasks, never heuristically judges the
+ * This report covers the task outcome, task clarity, and the quality of any
+ * <orchestrator-context>...</orchestrator-context> block that may have been
+ * supplied with the prompt. The report is required on every subagent turn,
+ * regardless of whether an orchestrator-context block was present.
+ *
+ * This extension does not assess anything itself. It never inspects "input"
+ * events, never cancels tasks, never heuristically judges the task or
  * context, and never notifies the UI. Its only job is:
  *
- *   1. On `before_agent_start`, check whether the prompt contains a
- *      complete, non-empty <orchestrator-context> block.
- *   2. If so, activate `report_context_feedback` for this turn and inject a
- *      single instruction telling the agent to call it exactly once, as its
- *      final action, with its own honest assessment.
- *   3. If not, do nothing — the prompt passes through completely unchanged.
+ *   1. On `before_agent_start`, activate `report_context_feedback` for this
+ *      turn and inject a single instruction telling the agent to call it
+ *      exactly once, as its final action, with its own honest assessment.
+ *   2. Detect whether the prompt contains a complete, non-empty
+ *      <orchestrator-context> block, and tailor the injected instruction so
+ *      the agent knows whether context was supplied or not (feedback is
+ *      still required either way).
  *
- * The tool itself simply records the agent-authored verdict, reason, and
- * confidence in its durable result `details` and terminates the turn.
+ * The tool itself simply records the agent-authored report in its durable
+ * result `details` and terminates the turn.
  */
 import { defineTool, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { StringEnum } from "@earendil-works/pi-ai";
@@ -37,8 +42,11 @@ function hasCompleteNonEmptyOrchestratorContext(text: string): boolean {
 }
 
 interface ContextFeedbackDetails {
-	verdict: "useful" | "insufficient" | "irrelevant" | "conflicting";
+	taskOutcome: "success" | "partial" | "failure";
+	taskClarity: "clear" | "unclear";
+	contextQuality: "useful" | "insufficient" | "irrelevant" | "conflicting" | "not_supplied";
 	reason: string;
+	suggestion?: string;
 	confidence: "low" | "medium" | "high";
 }
 
@@ -46,28 +54,50 @@ const reportContextFeedbackTool = defineTool({
 	name: TOOL_NAME,
 	label: "Report Context Feedback",
 	description:
-		"Report your own final assessment of the quality of the supplied orchestrator-context block. " +
-		"Call this exactly once, as your last action, after you have finished using the context.",
-	promptSnippet: "Report your final assessment of the supplied orchestrator-context block",
+		"Submit your final universal feedback report for this turn: task outcome, task clarity, " +
+		"context quality (use 'not_supplied' if no orchestrator-context block was given), reason, " +
+		"an optional suggestion, and your confidence. Call this exactly once, as your last action.",
+	promptSnippet: "Submit your final universal feedback report for this turn",
 	promptGuidelines: [
-		"Call report_context_feedback exactly once, as your final action, when an orchestrator-context block was supplied for this turn.",
-		"Base the report_context_feedback verdict, reason, and confidence on your own honest assessment, not a heuristic.",
+		"Call report_context_feedback exactly once, as your final action, on every turn — whether or not an orchestrator-context block was supplied.",
+		"Base taskOutcome, taskClarity, contextQuality, reason, suggestion, and confidence on your own honest assessment, not a heuristic.",
+		"If no orchestrator-context block was supplied, set contextQuality to 'not_supplied'.",
 	],
 	parameters: Type.Object({
-		verdict: StringEnum(["useful", "insufficient", "irrelevant", "conflicting"] as const, {
-			description:
-				"Your assessment of the supplied context: useful, insufficient, irrelevant, or conflicting.",
+		taskOutcome: StringEnum(["success", "partial", "failure"] as const, {
+			description: "Your assessment of how the task went: success, partial, or failure.",
 		}),
-		reason: Type.String({ description: "Short human-readable explanation for the verdict." }),
+		taskClarity: StringEnum(["clear", "unclear"] as const, {
+			description: "Whether the task instructions you were given were clear or unclear.",
+		}),
+		contextQuality: StringEnum(
+			["useful", "insufficient", "irrelevant", "conflicting", "not_supplied"] as const,
+			{
+				description:
+					"Your assessment of the supplied orchestrator-context block: useful, insufficient, " +
+					"irrelevant, or conflicting. Use 'not_supplied' if no such block was given for this turn.",
+			},
+		),
+		reason: Type.String({
+			description: "Short human-readable explanation for the taskOutcome/taskClarity/contextQuality assessments.",
+		}),
+		suggestion: Type.Optional(
+			Type.String({
+				description: "Optional suggestion for how the task or context could be improved next time.",
+			}),
+		),
 		confidence: StringEnum(["low", "medium", "high"] as const, {
-			description: "Your confidence in this verdict: low, medium, or high.",
+			description: "Your confidence in this report: low, medium, or high.",
 		}),
 	}),
 
 	async execute(_toolCallId, params) {
 		const details: ContextFeedbackDetails = {
-			verdict: params.verdict,
+			taskOutcome: params.taskOutcome,
+			taskClarity: params.taskClarity,
+			contextQuality: params.contextQuality,
 			reason: params.reason,
+			...(params.suggestion ? { suggestion: params.suggestion } : {}),
 			confidence: params.confidence,
 		};
 
@@ -75,7 +105,9 @@ const reportContextFeedbackTool = defineTool({
 			content: [
 				{
 					type: "text",
-					text: `Context feedback recorded: ${params.verdict} (${params.confidence} confidence) — ${params.reason}`,
+					text:
+						`Feedback recorded: outcome=${params.taskOutcome}, clarity=${params.taskClarity}, ` +
+						`context=${params.contextQuality} (${params.confidence} confidence) — ${params.reason}`,
 				},
 			],
 			details,
@@ -87,30 +119,32 @@ const reportContextFeedbackTool = defineTool({
 export default function (pi: ExtensionAPI) {
 	pi.registerTool(reportContextFeedbackTool);
 
-	// Keep the tool registered but inactive by default; unmarked tasks are
-	// left completely unchanged.
+	// Keep the tool registered but inactive by default until a turn starts.
 	pi.on("session_start", () => {
 		const initialTools = pi.getActiveTools().filter((name) => name !== TOOL_NAME);
 		pi.setActiveTools(initialTools);
 	});
 
 	pi.on("before_agent_start", async (event) => {
-		if (!hasCompleteNonEmptyOrchestratorContext(event.prompt)) {
-			return;
-		}
-
 		const active = pi.getActiveTools();
 		if (!active.includes(TOOL_NAME)) {
 			pi.setActiveTools([...active, TOOL_NAME]);
 		}
 
+		const contextSupplied = hasCompleteNonEmptyOrchestratorContext(event.prompt);
+
 		return {
 			message: {
 				customType: "context-feedback-instruction",
-				content:
-					"An <orchestrator-context> block was supplied with this prompt. After you finish using it, " +
-					"call report_context_feedback exactly once, as your final action, with your own honest " +
-					"assessment (verdict, reason, confidence) of its quality.",
+				content: contextSupplied
+					? "An <orchestrator-context> block was supplied with this prompt. Before finishing, call " +
+						"report_context_feedback exactly once, as your final action, with your own honest " +
+						"universal feedback report: task outcome, task clarity, context quality, reason, an " +
+						"optional suggestion, and your confidence."
+					: "No <orchestrator-context> block was supplied with this prompt. Before finishing, call " +
+						"report_context_feedback exactly once, as your final action, with your own honest " +
+						"universal feedback report: task outcome, task clarity, contextQuality set to " +
+						"'not_supplied', reason, an optional suggestion, and your confidence.",
 				display: false,
 			},
 		};
